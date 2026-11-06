@@ -20,6 +20,7 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - S13. Add a settings section to the sidebar. User: "le falta su seccion de configuraciones en su sidebar".
 - S14. The sidebar and layout are responsive. User: "tambien debe ser responsive".
 - S15. Add features that satisfy the client, inspired by global and regional leaders. User: "mas funcionalidades que le falta al proyecto para que el cliente este satisfecho". Assumption: delivered incrementally, starting with the agenda, team list, and manual backup; WhatsApp stays out until authorized.
+- S16. Add a WhatsApp button that opens the chat with a prepared message; a person reviews and sends it. Without API. The user authorized it: "yes te autorizo". The prepared message is editable in Settings.
 
 ## Tasks
 
@@ -30,6 +31,7 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - [x] T5. S11: prospect storage, importer, and desktop section with conversion to lead. Route: inline. Commits: 156eae8, 207fb47, 5418b3e.
 - [x] T6. S13, S15: settings persistence with theme, team, follow-up days, and manual backup. Route: inline. Risk: item 1. Commit: f2cab15.
 - [x] T7. S12-S15: design system, responsive shell, settings view, and agenda. Route: inline. Commit: e49e7b2.
+- [x] T8. S16: WhatsApp chat link with an editable message template. Route: inline. Commit: 2550d2a.
 
 ## Log
 
@@ -55,3 +57,4 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - L18 (2026-11-06): Windows Actions run 42311118079 did not start because of an account billing block. Cross-compilation with zig produced PE32+ binaries; they have not been run on Windows.
 - L19 (2026-11-06): Verifier passed S11 with no blockers. Advisories kept: backups hold the post-migration schema, reruns leave extra backups, conversion does not mark the prospect, and a failed startup may leave Prospects loading.
 - L20 (2026-11-06): Real-window captures confirmed light theme, dark theme, and the icon rail. Bottom navigation, settings clicks, and agenda were not exercised in the live window. Native review of commits after 4728027 is pending.
+- L21 (2026-11-06, user answer, verbatim): "yes te autorizo". Authorized scope: open `wa.me` in the external browser or app with prepared text. No credential, API, or automatic send.
