@@ -16,6 +16,10 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - S9. Data persists across restarts in a local SQLite file. No customer data enters this repository; fixtures are synthetic.
 - S10. Improve the desktop UI and UX. User: "no hay forma de mejora el diseño ui & Ux ?". Assumption: the slice keeps the existing lead fields and stages.
 - S11. Load the existing spreadsheet data into the software. User: "los datos de clientes ya estaban en un excel buscalo y pasalos al softwart". Evidence: the source holds INGEMMET concession titleholders, without phone, RUC, or email, so records load as prospects and never as leads with invented contact data. Customer files stay outside this repository.
+- S12. Improve the design system with light and dark themes. User: "mejora el system desing del proyecto inspirate en el mejor theme light , theme dark".
+- S13. Add a settings section to the sidebar. User: "le falta su seccion de configuraciones en su sidebar".
+- S14. The sidebar and layout are responsive. User: "tambien debe ser responsive".
+- S15. Add features that satisfy the client, inspired by global and regional leaders. User: "mas funcionalidades que le falta al proyecto para que el cliente este satisfecho". Assumption: delivered incrementally, starting with the agenda, team list, and manual backup; WhatsApp stays out until authorized.
 
 ## Tasks
 
@@ -24,6 +28,8 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - [x] T3. S3, S4, S5, S7, S8: Dioxus desktop UI. Route: inline. Commit: bd93a86.
 - [x] T4. S10: redesigned workspace, metrics, search, follow-up status and lead panel. Route: inline. Commit: 1671ed5.
 - [x] T5. S11: prospect storage, importer, and desktop section with conversion to lead. Route: inline. Commits: 156eae8, 207fb47, 5418b3e.
+- [x] T6. S13, S15: settings persistence with theme, team, follow-up days, and manual backup. Route: inline. Risk: item 1. Commit: f2cab15.
+- [x] T7. S12-S15: design system, responsive shell, settings view, and agenda. Route: inline. Commit: e49e7b2.
 
 ## Log
 
@@ -45,3 +51,7 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - L14 (2026-11-06): Source profile: 799 companies and 1222 people, with 0 phones, 0 RUCs, and 0 emails. Imported 2021 prospects into the local database; a repeated import added 0; integrity check ok. Not imported: 94 titleholders excluded earlier as medium or large mining.
 - L15 (2026-11-06): Risk: item 1 (new table). An independent verifier was launched. Live-window use of the Prospects section and conversion remains unconfirmed.
 - L16 (2026-11-06): The public repository `Dreamcoder08/cominorsa-web` tracks the source spreadsheet and CSV files. Cleanup awaits a user decision.
+- L17 (2026-11-06, user request, verbatim): "hey bro mejora el system desing del proyecto inspirate en el mejor theme light , theme dark , ademas que le falta su seccion de configuraciones en su sidebar , que tambien debe ser responsive y mas funcionalidades que le falta al proyecto para que el cliente este satisfecho inspriate en las funcionalidades de los mejores del mundo , competencia local , regional , y mas".
+- L18 (2026-11-06): Windows Actions run 42311118079 did not start because of an account billing block. Cross-compilation with zig produced PE32+ binaries; they have not been run on Windows.
+- L19 (2026-11-06): Verifier passed S11 with no blockers. Advisories kept: backups hold the post-migration schema, reruns leave extra backups, conversion does not mark the prospect, and a failed startup may leave Prospects loading.
+- L20 (2026-11-06): Real-window captures confirmed light theme, dark theme, and the icon rail. Bottom navigation, settings clicks, and agenda were not exercised in the live window. Native review of commits after 4728027 is pending.

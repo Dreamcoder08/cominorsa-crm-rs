@@ -14,3 +14,4 @@ Verified facts only. Each entry has a check date and a source. Replace entries o
 | Linker | rust-lld (default) | mold 3.0, wild 0.11 | 2026-11-06 | mehdi.cz (2026-10-31), efraingaray.com (2026-10-27) | Gain is small for release rebuilds; measure first |
 | Transitive unmaintained | - | fxhash (RUSTSEC-2025-0057), paste (RUSTSEC-2024-0436), proc-macro-error (RUSTSEC-2024-0370) | 2026-11-06 | cargo deny check | All via Dioxus 0.7 (selectors, rav1e, gtk3-macros); `deny.toml` checks unmaintained for direct deps only. Recheck on each Dioxus upgrade |
 | Dioxus image codecs | image with defaults (pulls rav1e AVIF encoder) | Dioxus main disables image defaults, PNG + ICO only (merged 2026-10-23) | 2026-11-06 | Dioxus merged PRs | Expect smaller build and binary after the next Dioxus release; unreleased today |
+| csv | 1 | 1.4.0 (2025-10-17) | 2026-11-06 | crates.io API | Used only by `crates/importer` |
