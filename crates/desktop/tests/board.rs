@@ -51,6 +51,40 @@ fn workspace_with_leads() -> Element {
     }
 }
 
+fn workspace_with_whatsapp() -> Element {
+    let mut with_phone = leads();
+    with_phone.push(
+        Lead::create(NewLead {
+            name: "Sin WhatsApp".to_owned(),
+            phone: "073123456".to_owned(),
+            ruc: None,
+            service: "DAC".to_owned(),
+            follow_up_on: TODAY,
+        })
+        .unwrap(),
+    );
+
+    rsx! {
+        Workspace {
+            leads: with_phone,
+            today: TODAY,
+            query: String::new(),
+            whatsapp_template: "Hola {nombre}".to_owned(),
+            on_query: |_| {},
+            on_new: |_| {},
+            on_advance: |_| {},
+        }
+    }
+}
+
+#[test]
+fn links_valid_phones_to_a_prepared_whatsapp_chat() {
+    let html = render(workspace_with_whatsapp);
+
+    assert_eq!(html.matches(">WhatsApp<").count(), 3);
+    assert!(html.contains("https://wa.me/51900000000?text=Hola%20Atrasada"));
+}
+
 fn workspace_without_matches() -> Element {
     rsx! {
         Workspace {
@@ -331,7 +365,15 @@ fn settings_view() -> Element {
 fn shows_theme_team_follow_up_and_data_settings() {
     let html = render(settings_view);
 
-    for text in ["Apariencia", "Sistema", "Claro", "Oscuro", "Equipo", "Ana"] {
+    for text in [
+        "Apariencia",
+        "Sistema",
+        "Claro",
+        "Oscuro",
+        "Equipo",
+        "Ana",
+        "Mensaje de WhatsApp",
+    ] {
         assert!(html.contains(text), "missing {text}");
     }
     assert!(html.contains("Crear copia de seguridad"));

@@ -1,6 +1,6 @@
 # COMINORSA CRM
 
-Local desktop CRM written in Rust. It registers leads, moves them through the sales pipeline, searches them, shows a follow-up agenda, and keeps a searchable prospect list that converts into leads. Settings cover the light, dark, or system theme, the team list, default follow-up days, and manual backups.
+Local desktop CRM written in Rust. It registers leads, moves them through the sales pipeline, searches them, shows a follow-up agenda, and keeps a searchable prospect list that converts into leads. Lead cards open a prepared WhatsApp chat that a person reviews and sends. Settings cover the light, dark, or system theme, the team list, default follow-up days, the WhatsApp message, and manual backups.
 
 ## Quick path
 

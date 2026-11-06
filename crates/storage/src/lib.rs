@@ -44,6 +44,7 @@ const SEARCH_PROSPECTS: &str = "SELECT kind, name, profile, concessions, hectare
 
 const THEME_KEY: &str = "theme";
 const FOLLOW_UP_DAYS_KEY: &str = "follow_up_days";
+const WHATSAPP_TEMPLATE_KEY: &str = "whatsapp_template";
 const UPSERT_SETTING: &str = "INSERT INTO settings (key, value) VALUES (?1, ?2)
     ON CONFLICT (key) DO UPDATE SET value = excluded.value";
 
@@ -196,6 +197,9 @@ impl SettingsRepository for SqliteLeads {
                     let days = value.parse().map_err(failure)?;
                     settings.set_follow_up_days(days).map_err(failure)?;
                 }
+                WHATSAPP_TEMPLATE_KEY => {
+                    settings.set_whatsapp_template(&value).map_err(failure)?;
+                }
                 _ => {}
             }
         }
@@ -218,6 +222,10 @@ impl SettingsRepository for SqliteLeads {
         for (key, value) in [
             (THEME_KEY, settings.theme.code().to_owned()),
             (FOLLOW_UP_DAYS_KEY, settings.follow_up_days().to_string()),
+            (
+                WHATSAPP_TEMPLATE_KEY,
+                settings.whatsapp_template().to_owned(),
+            ),
         ] {
             sqlx::query(UPSERT_SETTING)
                 .bind(key)

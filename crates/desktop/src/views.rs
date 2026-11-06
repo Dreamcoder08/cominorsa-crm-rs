@@ -75,7 +75,12 @@ fn NavItem(
 }
 
 #[component]
-pub fn Agenda(leads: Vec<Lead>, today: Date, on_open_pipeline: EventHandler<()>) -> Element {
+pub fn Agenda(
+    leads: Vec<Lead>,
+    today: Date,
+    #[props(default)] whatsapp_template: String,
+    on_open_pipeline: EventHandler<()>,
+) -> Element {
     let groups = AgendaGroups::of(&leads, today);
     let is_empty = groups.is_empty();
 
@@ -93,15 +98,20 @@ pub fn Agenda(leads: Vec<Lead>, today: Date, on_open_pipeline: EventHandler<()>)
                 button { class: "primary", onclick: move |_| on_open_pipeline.call(()), "Ver embudo" }
             }
         } else {
-            AgendaGroup { title: "Vencidos", leads: groups.overdue, today }
-            AgendaGroup { title: "Hoy", leads: groups.today, today }
-            AgendaGroup { title: "Próximos 7 días", leads: groups.upcoming, today }
+            AgendaGroup { title: "Vencidos", leads: groups.overdue, today, whatsapp_template: whatsapp_template.clone() }
+            AgendaGroup { title: "Hoy", leads: groups.today, today, whatsapp_template: whatsapp_template.clone() }
+            AgendaGroup { title: "Próximos 7 días", leads: groups.upcoming, today, whatsapp_template: whatsapp_template.clone() }
         }
     }
 }
 
 #[component]
-fn AgendaGroup(title: &'static str, leads: Vec<Lead>, today: Date) -> Element {
+fn AgendaGroup(
+    title: &'static str,
+    leads: Vec<Lead>,
+    today: Date,
+    whatsapp_template: String,
+) -> Element {
     if leads.is_empty() {
         return rsx! {};
     }
@@ -119,7 +129,17 @@ fn AgendaGroup(title: &'static str, leads: Vec<Lead>, today: Date) -> Element {
                                     strong { "{lead.name()}" }
                                     span { class: "detail", "{lead.service()} · {lead.phone()}" }
                                 }
-                                span { class: "status {status.class()}", "{status.label()}" }
+                                div { class: "card-actions",
+                                    span { class: "status {status.class()}", "{status.label()}" }
+                                    if let Some(url) = lead.whatsapp_url(&whatsapp_template) {
+                                        a {
+                                            class: "secondary",
+                                            href: "{url}",
+                                            aria_label: "Preparar mensaje de WhatsApp para {lead.name()}",
+                                            "WhatsApp"
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -209,6 +229,7 @@ pub fn Workspace(
     leads: Vec<Lead>,
     today: Date,
     query: String,
+    #[props(default)] whatsapp_template: String,
     on_query: EventHandler<String>,
     on_new: EventHandler<()>,
     on_advance: EventHandler<Uuid>,
@@ -261,7 +282,7 @@ pub fn Workspace(
                         p { "Prueba con otro nombre, RUC, teléfono o servicio." }
                     }
                 } else {
-                    Board { leads: visible, today, on_advance }
+                    Board { leads: visible, today, whatsapp_template, on_advance }
                 }
     }
 }
@@ -277,7 +298,12 @@ fn Metric(label: &'static str, value: usize, tone: &'static str) -> Element {
 }
 
 #[component]
-fn Board(leads: Vec<Lead>, today: Date, on_advance: EventHandler<Uuid>) -> Element {
+fn Board(
+    leads: Vec<Lead>,
+    today: Date,
+    whatsapp_template: String,
+    on_advance: EventHandler<Uuid>,
+) -> Element {
     rsx! {
         section { class: "board", aria_label: "Etapas del embudo",
             for stage in Stage::ALL {
@@ -300,6 +326,7 @@ fn Board(leads: Vec<Lead>, today: Date, on_advance: EventHandler<Uuid>) -> Eleme
                                     LeadCard {
                                         key: "{lead.id()}",
                                         status: FollowUp::of(&lead, today),
+                                        whatsapp: lead.whatsapp_url(&whatsapp_template),
                                         lead,
                                         on_advance,
                                     }
@@ -317,7 +344,12 @@ fn Board(leads: Vec<Lead>, today: Date, on_advance: EventHandler<Uuid>) -> Eleme
 }
 
 #[component]
-fn LeadCard(lead: Lead, status: FollowUp, on_advance: EventHandler<Uuid>) -> Element {
+fn LeadCard(
+    lead: Lead,
+    status: FollowUp,
+    whatsapp: Option<String>,
+    on_advance: EventHandler<Uuid>,
+) -> Element {
     let id = lead.id();
 
     rsx! {
@@ -332,12 +364,22 @@ fn LeadCard(lead: Lead, status: FollowUp, on_advance: EventHandler<Uuid>) -> Ele
             }
             div { class: "card-bottom",
                 span { class: "status {status.class()}", "{status.label()}" }
-                if lead.stage() != Stage::ContractSigned {
-                    button {
-                        class: "secondary",
-                        aria_label: "Mover {lead.name()} a la siguiente etapa",
-                        onclick: move |_| on_advance.call(id),
-                        "Avanzar"
+                div { class: "card-actions",
+                    if let Some(url) = whatsapp {
+                        a {
+                            class: "secondary",
+                            href: "{url}",
+                            aria_label: "Preparar mensaje de WhatsApp para {lead.name()}",
+                            "WhatsApp"
+                        }
+                    }
+                    if lead.stage() != Stage::ContractSigned {
+                        button {
+                            class: "secondary",
+                            aria_label: "Mover {lead.name()} a la siguiente etapa",
+                            onclick: move |_| on_advance.call(id),
+                            "Avanzar"
+                        }
                     }
                 }
             }

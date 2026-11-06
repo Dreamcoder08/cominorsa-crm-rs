@@ -31,6 +31,7 @@ pub fn SettingsView(
     };
     let days = settings.follow_up_days();
     let days_settings = settings.clone();
+    let template_settings = settings.clone();
 
     rsx! {
         header { class: "topbar",
@@ -119,6 +120,21 @@ pub fn SettingsView(
                             .ok()
                             .and_then(|value| next.set_follow_up_days(value).ok());
                         if applied.is_some() {
+                            on_change.call(next);
+                        }
+                    },
+                }
+            }
+            section { class: "setting-group",
+                h2 { "Mensaje de WhatsApp" }
+                p { "Se abre listo para revisar; una persona lo envía. Usa {{nombre}} y {{servicio}}." }
+                textarea {
+                    aria_label: "Mensaje de WhatsApp",
+                    rows: 3,
+                    value: "{settings.whatsapp_template()}",
+                    onchange: move |event| {
+                        let mut next = template_settings.clone();
+                        if next.set_whatsapp_template(&event.value()).is_ok() {
                             on_change.call(next);
                         }
                     },

@@ -3,6 +3,8 @@ use std::future::Future;
 use crate::{DomainError, RepositoryError};
 
 const DEFAULT_FOLLOW_UP_DAYS: u32 = 3;
+const DEFAULT_WHATSAPP_TEMPLATE: &str =
+    "Hola {nombre}, te escribimos de COMINORSA sobre {servicio}. ¿Podemos conversar?";
 const FOLLOW_UP_DAYS: std::ops::RangeInclusive<u32> = 1..=90;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -43,6 +45,7 @@ pub struct Settings {
     pub theme: ThemePreference,
     team: Vec<String>,
     follow_up_days: u32,
+    whatsapp_template: String,
 }
 
 impl Default for Settings {
@@ -51,6 +54,7 @@ impl Default for Settings {
             theme: ThemePreference::default(),
             team: Vec::new(),
             follow_up_days: DEFAULT_FOLLOW_UP_DAYS,
+            whatsapp_template: DEFAULT_WHATSAPP_TEMPLATE.to_owned(),
         }
     }
 }
@@ -84,6 +88,20 @@ impl Settings {
 
         self.follow_up_days = days;
         Ok(())
+    }
+
+    pub fn set_whatsapp_template(&mut self, template: &str) -> Result<(), DomainError> {
+        let template = template.trim();
+        if template.is_empty() {
+            return Err(DomainError::MissingField("mensaje"));
+        }
+
+        self.whatsapp_template = template.to_owned();
+        Ok(())
+    }
+
+    pub fn whatsapp_template(&self) -> &str {
+        &self.whatsapp_template
     }
 
     pub fn team(&self) -> &[String] {

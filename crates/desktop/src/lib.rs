@@ -239,6 +239,7 @@ pub fn App() -> Element {
                 Agenda {
                     leads: leads(),
                     today: today_in_peru(),
+                    whatsapp_template: settings.read().whatsapp_template().to_owned(),
                     on_open_pipeline: move |_| section.set(Section::Pipeline),
                 }
             } else if section() == Section::Pipeline {
@@ -246,6 +247,7 @@ pub fn App() -> Element {
                     leads: leads(),
                     today: today_in_peru(),
                     query: query(),
+                    whatsapp_template: settings.read().whatsapp_template().to_owned(),
                     on_query: move |value| query.set(value),
                     on_new: move |_| {
                         form_error.set(String::new());

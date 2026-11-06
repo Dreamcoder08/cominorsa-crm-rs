@@ -2,7 +2,7 @@ use thiserror::Error;
 use time::Date;
 use uuid::Uuid;
 
-use crate::Ruc;
+use crate::{Ruc, whatsapp};
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum DomainError {
@@ -137,6 +137,16 @@ impl Lead {
     /// Signed contracts leave the sales follow-up queue.
     pub fn is_follow_up_due(&self, today: Date) -> bool {
         self.stage != Stage::ContractSigned && self.follow_up_on <= today
+    }
+
+    /// Prepared chat link, or `None` when the phone cannot use WhatsApp.
+    pub fn whatsapp_url(&self, template: &str) -> Option<String> {
+        let number = whatsapp::whatsapp_number(&self.phone)?;
+        let message = template
+            .replace("{nombre}", &self.name)
+            .replace("{servicio}", &self.service);
+
+        Some(whatsapp::chat_url(&number, &message))
     }
 
     pub fn id(&self) -> Uuid {

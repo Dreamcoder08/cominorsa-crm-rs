@@ -229,6 +229,7 @@ async fn persists_settings_across_reopen_and_replaces_the_team() {
     settings.set_follow_up_days(7).unwrap();
     settings.add_member("Ana").unwrap();
     settings.add_member("Luis").unwrap();
+    settings.set_whatsapp_template("Hola {nombre}").unwrap();
     store.persist(&settings).await.unwrap();
 
     settings.remove_member("Ana");
