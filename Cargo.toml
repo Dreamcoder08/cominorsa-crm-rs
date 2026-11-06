@@ -1,0 +1,23 @@
+[workspace]
+members = ["crates/domain", "crates/storage", "crates/desktop"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+cominorsa-domain = { path = "crates/domain" }
+cominorsa-storage = { path = "crates/storage" }
+dioxus = { version = "0.7", default-features = false, features = ["desktop", "hooks", "html", "signals", "macro"] }
+dioxus-ssr = "0.7"
+directories = "6"
+sqlx = { version = "0.9", default-features = false, features = ["macros", "migrate", "runtime-tokio", "sqlite"] }
+thiserror = "2"
+time = { version = "0.3", features = ["formatting", "macros", "parsing"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+uuid = { version = "1", features = ["v7"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
