@@ -4,7 +4,7 @@ description: "Trigger: commit, before finishing, quality check, clippy, tests, C
 license: Apache-2.0
 metadata:
   author: "dreamcoder08"
-  version: "1.0"
+  version: "1.1"
 ---
 
 ## Activation Contract
@@ -21,6 +21,7 @@ Load before any commit or before reporting a code change as done in this reposit
 - `unsafe_code` stays forbidden; never add `#[allow]` to silence clippy without a one-line reason.
 - Fixtures are synthetic; never commit customer data, credentials, `.db`, or `.csv` files.
 - A skipped check is reported as SKIPPED with the reason, never as passed.
+- Other sessions may edit this tree: stage only paths you changed, by name; never `git add -A` or `git commit -a`.
 
 ## Decision Gates
 

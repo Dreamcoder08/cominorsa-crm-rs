@@ -1,0 +1,55 @@
+# cargo-deny policy. Run through `scripts/check.sh --full`.
+
+[graph]
+all-features = false
+
+[advisories]
+# RustSec database; yanked versions fail the check.
+yanked = "deny"
+# Unmaintained notices only for our direct dependencies. Transitive ones
+# (fxhash, paste, proc-macro-error via Dioxus) are tracked in stack-watch.
+unmaintained = "workspace"
+
+[licenses]
+version = 2
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    # File-level copyleft (cssparser and friends via wry); fine for an unmodified dependency.
+    "MPL-2.0",
+    # Permissive LLVM license (libfuzzer-sys via image/rav1e).
+    "NCSA",
+    "Unicode-3.0",
+    "Zlib",
+]
+unused-allowed-license = "warn"
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+# Layering: only the storage adapter talks to SQL, only the desktop crate uses Dioxus.
+[[bans.deny]]
+name = "sqlx"
+wrappers = ["cominorsa-storage"]
+
+[[bans.deny]]
+name = "dioxus"
+wrappers = ["cominorsa-desktop"]
+
+[[bans.deny]]
+name = "dioxus-ssr"
+wrappers = ["cominorsa-desktop"]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
