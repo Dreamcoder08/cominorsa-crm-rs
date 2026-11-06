@@ -15,6 +15,7 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - S8. Show leads whose follow-up date is overdue or due today. Assumption: alerts appear inside the open app only.
 - S9. Data persists across restarts in a local SQLite file. No customer data enters this repository; fixtures are synthetic.
 - S10. Improve the desktop UI and UX. User: "no hay forma de mejora el diseño ui & Ux ?". Assumption: the slice keeps the existing lead fields and stages.
+- S11. Load the existing spreadsheet data into the software. User: "los datos de clientes ya estaban en un excel buscalo y pasalos al softwart". Evidence: the source holds INGEMMET concession titleholders, without phone, RUC, or email, so records load as prospects and never as leads with invented contact data. Customer files stay outside this repository.
 
 ## Tasks
 
@@ -22,6 +23,7 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - [x] T2. S8, S9: SQLite storage adapter. Route: inline. Commit: d998a7b.
 - [x] T3. S3, S4, S5, S7, S8: Dioxus desktop UI. Route: inline. Commit: bd93a86.
 - [x] T4. S10: redesigned workspace, metrics, search, follow-up status and lead panel. Route: inline. Commit: 1671ed5.
+- [x] T5. S11: prospect storage, importer, and desktop section with conversion to lead. Route: inline. Commits: 156eae8, 207fb47, 5418b3e.
 
 ## Log
 
@@ -39,3 +41,7 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - L10 (2026-11-06): Fixed `R3-duplicate-submit` in 9aed357. 18 tests pass and clippy is clean; the fix was not exercised in the live window.
 - L11 (2026-11-06, user request, verbatim): "perfecto solo eso ?? y mas automatizacion o mas ? no hay forma de mejora el diseño ui & Ux ?".
 - L12 (2026-11-06): Redesign committed in 1671ed5. 23 tests pass. A real-window capture with synthetic data confirmed the workspace, metrics, status chips and removed menu. The new-lead panel, Escape, and search were not exercised in the live window.
+- L13 (2026-11-06, user request, verbatim): "bien pero los datos de clientes ya estaban en un excel buscalo y pasalos al softwart".
+- L14 (2026-11-06): Source profile: 799 companies and 1222 people, with 0 phones, 0 RUCs, and 0 emails. Imported 2021 prospects into the local database; a repeated import added 0; integrity check ok. Not imported: 94 titleholders excluded earlier as medium or large mining.
+- L15 (2026-11-06): Risk: item 1 (new table). An independent verifier was launched. Live-window use of the Prospects section and conversion remains unconfirmed.
+- L16 (2026-11-06): The public repository `Dreamcoder08/cominorsa-web` tracks the source spreadsheet and CSV files. Cleanup awaits a user decision.
