@@ -71,11 +71,17 @@ async fn saving_an_existing_lead_updates_it() {
 async fn refuses_to_return_a_corrupt_record() {
     let database = TempDatabase::new();
     let store = SqliteLeads::open(&database.path()).await.unwrap();
-    store.save(&lead("Minera", date!(2026 - 11 - 01))).await.unwrap();
+    store
+        .save(&lead("Minera", date!(2026 - 11 - 01)))
+        .await
+        .unwrap();
 
     let options = SqliteConnectOptions::new().filename(database.path());
     let raw = SqlitePool::connect_with(options).await.unwrap();
-    sqlx::query("UPDATE leads SET stage = 'unknown'").execute(&raw).await.unwrap();
+    sqlx::query("UPDATE leads SET stage = 'unknown'")
+        .execute(&raw)
+        .await
+        .unwrap();
     raw.close().await;
 
     assert!(store.list().await.is_err());

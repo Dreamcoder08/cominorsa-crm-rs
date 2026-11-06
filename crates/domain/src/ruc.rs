@@ -16,7 +16,9 @@ impl Ruc {
         let has_valid_shape = value.len() == LENGTH && digits.len() == LENGTH;
 
         if has_valid_shape
-            && VALID_PREFIXES.iter().any(|prefix| value.starts_with(prefix))
+            && VALID_PREFIXES
+                .iter()
+                .any(|prefix| value.starts_with(prefix))
             && check_digit(&digits) == digits[LENGTH - 1]
         {
             Ok(Self(value.to_owned()))

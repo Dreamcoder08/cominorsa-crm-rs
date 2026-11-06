@@ -45,7 +45,10 @@ impl SqliteLeads {
             .await
             .map_err(failure)?;
 
-        sqlx::migrate!("./migrations").run(&pool).await.map_err(failure)?;
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .map_err(failure)?;
 
         Ok(Self { pool })
     }
@@ -75,7 +78,10 @@ impl LeadRepository for SqliteLeads {
     }
 
     async fn list(&self) -> Result<Vec<Lead>, RepositoryError> {
-        let rows = sqlx::query(SELECT_ALL).fetch_all(&self.pool).await.map_err(failure)?;
+        let rows = sqlx::query(SELECT_ALL)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(failure)?;
 
         rows.iter().map(to_lead).collect()
     }

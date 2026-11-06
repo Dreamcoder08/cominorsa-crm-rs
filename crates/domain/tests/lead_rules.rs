@@ -31,20 +31,35 @@ fn treats_blank_ruc_as_absent() {
 fn rejects_blank_required_fields() {
     let mut input = new_lead(None);
     input.name = "   ".to_owned();
-    assert_eq!(Lead::create(input), Err(DomainError::MissingField("nombre")));
+    assert_eq!(
+        Lead::create(input),
+        Err(DomainError::MissingField("nombre"))
+    );
 
     let mut input = new_lead(None);
     input.phone = String::new();
-    assert_eq!(Lead::create(input), Err(DomainError::MissingField("teléfono")));
+    assert_eq!(
+        Lead::create(input),
+        Err(DomainError::MissingField("teléfono"))
+    );
 
     let mut input = new_lead(None);
     input.service = String::new();
-    assert_eq!(Lead::create(input), Err(DomainError::MissingField("servicio")));
+    assert_eq!(
+        Lead::create(input),
+        Err(DomainError::MissingField("servicio"))
+    );
 }
 
 #[test]
 fn rejects_invalid_rucs() {
-    for invalid in ["2012345678", "201234567861", "20123456787", "30123456781", "2012345678A"] {
+    for invalid in [
+        "2012345678",
+        "201234567861",
+        "20123456787",
+        "30123456781",
+        "2012345678A",
+    ] {
         assert_eq!(
             Ruc::parse(invalid),
             Err(DomainError::InvalidRuc),

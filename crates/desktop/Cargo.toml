@@ -10,6 +10,7 @@ cominorsa-storage.workspace = true
 dioxus.workspace = true
 directories.workspace = true
 time.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 dioxus-ssr.workspace = true

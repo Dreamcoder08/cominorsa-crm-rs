@@ -418,6 +418,7 @@ dependencies = [
  "dioxus-ssr",
  "directories",
  "time",
+ "uuid",
 ]
 
 [[package]]

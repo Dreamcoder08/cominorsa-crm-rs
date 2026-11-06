@@ -10,7 +10,7 @@ publish = false
 [workspace.dependencies]
 cominorsa-domain = { path = "crates/domain" }
 cominorsa-storage = { path = "crates/storage" }
-dioxus = { version = "0.7", default-features = false, features = ["desktop", "hooks", "html", "signals", "macro"] }
+dioxus = { version = "0.7", default-features = false, features = ["desktop", "hooks", "html", "launch", "macro", "signals"] }
 dioxus-ssr = "0.7"
 directories = "6"
 sqlx = { version = "0.9", default-features = false, features = ["macros", "migrate", "runtime-tokio", "sqlite"] }
