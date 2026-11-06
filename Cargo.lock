@@ -4129,6 +4129,9 @@ name = "smallvec"
 version = "1.16.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "149309498a5f7334b12ddae0cad8aba81ce785fe91755068867e017cf98fee46"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "socket2"
@@ -4212,6 +4215,7 @@ dependencies = [
  "memchr",
  "percent-encoding",
  "serde",
+ "serde_json",
  "sha2 0.10.9",
  "smallvec",
  "thiserror 2.0.21",
@@ -4253,6 +4257,7 @@ dependencies = [
  "sqlx-core",
  "sqlx-sqlite",
  "syn 2.0.119",
+ "thiserror 2.0.21",
  "tokio",
  "url",
 ]
@@ -4275,6 +4280,7 @@ dependencies = [
  "generic-array",
  "log",
  "percent-encoding",
+ "serde",
  "sha1 0.11.0",
  "sha2 0.11.1",
  "sqlx-core",
@@ -4306,6 +4312,8 @@ dependencies = [
  "md-5",
  "memchr",
  "rand 0.10.3",
+ "serde",
+ "serde_json",
  "sha2 0.11.1",
  "smallvec",
  "sqlx-core",
