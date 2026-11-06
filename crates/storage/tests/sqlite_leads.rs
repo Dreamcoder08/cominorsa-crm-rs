@@ -1,7 +1,8 @@
 use std::{borrow::Cow, env, fs, path::PathBuf};
 
 use cominorsa_domain::{
-    Lead, LeadRepository, NewLead, Prospect, ProspectKind, ProspectRepository, Stage,
+    Lead, LeadRepository, NewLead, Prospect, ProspectKind, ProspectRepository, Settings,
+    SettingsRepository, Stage, ThemePreference,
 };
 use cominorsa_storage::SqliteLeads;
 use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
@@ -209,4 +210,72 @@ async fn finds_uppercase_spanish_names_from_lowercase_queries() {
 
     assert_eq!(store.search("peña", 10).await.unwrap().len(), 1);
     assert_eq!(store.search("álvarez", 10).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn returns_default_settings_on_a_new_database() {
+    let database = TempDatabase::new();
+    let store = SqliteLeads::open(&database.path()).await.unwrap();
+
+    assert_eq!(store.load().await.unwrap(), Settings::default());
+}
+
+#[tokio::test]
+async fn persists_settings_across_reopen_and_replaces_the_team() {
+    let database = TempDatabase::new();
+    let store = SqliteLeads::open(&database.path()).await.unwrap();
+    let mut settings = Settings::default();
+    settings.theme = ThemePreference::Dark;
+    settings.set_follow_up_days(7).unwrap();
+    settings.add_member("Ana").unwrap();
+    settings.add_member("Luis").unwrap();
+    store.persist(&settings).await.unwrap();
+
+    settings.remove_member("Ana");
+    store.persist(&settings).await.unwrap();
+    store.close().await;
+
+    let reopened = SqliteLeads::open(&database.path()).await.unwrap();
+    assert_eq!(reopened.load().await.unwrap(), settings);
+}
+
+#[tokio::test]
+async fn keeps_leads_and_prospects_when_upgrading_from_the_second_schema() {
+    let database = TempDatabase::new();
+    fs::create_dir_all(database.path().parent().unwrap()).unwrap();
+    let options = SqliteConnectOptions::new()
+        .filename(database.path())
+        .create_if_missing(true);
+    let old = SqlitePool::connect_with(options).await.unwrap();
+    let mut second_schema = sqlx::migrate!("./migrations");
+    second_schema.migrations = Cow::Owned(
+        second_schema
+            .migrations
+            .iter()
+            .filter(|migration| migration.version <= 2)
+            .cloned()
+            .collect(),
+    );
+    second_schema.run(&old).await.unwrap();
+    sqlx::query(
+        "INSERT INTO leads VALUES ('00000000-0000-7000-8000-000000000001', 'Antiguo',
+            '900000000', NULL, 'DAC', 'quote_sent', '2026-11-01')",
+    )
+    .execute(&old)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO prospects VALUES ('person', 'Titular', 'OTRO_estado', 1, 2.5, 'PIURA',
+            'SULLANA', 'M', 'TITULADA', 'REVISAR_MANUAL', 1, 'Synthetic')",
+    )
+    .execute(&old)
+    .await
+    .unwrap();
+    old.close().await;
+
+    let upgraded = SqliteLeads::open(&database.path()).await.unwrap();
+
+    assert_eq!(upgraded.list().await.unwrap().len(), 1);
+    assert_eq!(upgraded.count().await.unwrap(), 1);
+    assert_eq!(upgraded.load().await.unwrap(), Settings::default());
 }

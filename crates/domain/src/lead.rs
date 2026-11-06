@@ -14,6 +14,10 @@ pub enum DomainError {
     FinalStage,
     #[error("El registro guardado no es válido")]
     CorruptRecord,
+    #[error("Esa persona ya está en el equipo")]
+    DuplicateMember,
+    #[error("El plazo debe estar entre 1 y 90 días")]
+    InvalidFollowUpDays,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

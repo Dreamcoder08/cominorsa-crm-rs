@@ -4,6 +4,7 @@ use std::{fs, path::Path};
 
 use cominorsa_domain::{
     Lead, LeadRecord, LeadRepository, Prospect, ProspectKind, ProspectRepository, RepositoryError,
+    Settings, SettingsRepository, ThemePreference,
 };
 use sqlx::{
     Row, SqlitePool,
@@ -40,6 +41,11 @@ const SEARCH_PROSPECTS: &str = "SELECT kind, name, profile, concessions, hectare
         OR potential_service LIKE ?1 ESCAPE '\\' OR potential_service LIKE ?3 ESCAPE '\\'
     ORDER BY needs_review, concessions DESC, name
     LIMIT ?2";
+
+const THEME_KEY: &str = "theme";
+const FOLLOW_UP_DAYS_KEY: &str = "follow_up_days";
+const UPSERT_SETTING: &str = "INSERT INTO settings (key, value) VALUES (?1, ?2)
+    ON CONFLICT (key) DO UPDATE SET value = excluded.value";
 
 #[derive(Clone)]
 pub struct SqliteLeads {
@@ -166,6 +172,75 @@ impl ProspectRepository for SqliteLeads {
             .map_err(failure)?;
 
         rows.iter().map(to_prospect).collect()
+    }
+}
+
+impl SettingsRepository for SqliteLeads {
+    async fn load(&self) -> Result<Settings, RepositoryError> {
+        let rows = sqlx::query("SELECT key, value FROM settings")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(failure)?;
+        let mut settings = Settings::default();
+
+        for row in &rows {
+            let key: String = row.try_get("key").map_err(failure)?;
+            let value: String = row.try_get("value").map_err(failure)?;
+
+            match key.as_str() {
+                THEME_KEY => {
+                    settings.theme = ThemePreference::from_code(&value)
+                        .ok_or_else(|| failure("Tema guardado desconocido"))?;
+                }
+                FOLLOW_UP_DAYS_KEY => {
+                    let days = value.parse().map_err(failure)?;
+                    settings.set_follow_up_days(days).map_err(failure)?;
+                }
+                _ => {}
+            }
+        }
+
+        let members = sqlx::query("SELECT name FROM team_members ORDER BY position")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(failure)?;
+        for member in &members {
+            let name: String = member.try_get("name").map_err(failure)?;
+            settings.add_member(&name).map_err(failure)?;
+        }
+
+        Ok(settings)
+    }
+
+    async fn persist(&self, settings: &Settings) -> Result<(), RepositoryError> {
+        let mut transaction = self.pool.begin().await.map_err(failure)?;
+
+        for (key, value) in [
+            (THEME_KEY, settings.theme.code().to_owned()),
+            (FOLLOW_UP_DAYS_KEY, settings.follow_up_days().to_string()),
+        ] {
+            sqlx::query(UPSERT_SETTING)
+                .bind(key)
+                .bind(value)
+                .execute(&mut *transaction)
+                .await
+                .map_err(failure)?;
+        }
+
+        sqlx::query("DELETE FROM team_members")
+            .execute(&mut *transaction)
+            .await
+            .map_err(failure)?;
+        for (position, name) in settings.team().iter().enumerate() {
+            sqlx::query("INSERT INTO team_members (position, name) VALUES (?1, ?2)")
+                .bind(i64::try_from(position).map_err(failure)?)
+                .bind(name)
+                .execute(&mut *transaction)
+                .await
+                .map_err(failure)?;
+        }
+
+        transaction.commit().await.map_err(failure)
     }
 }
 
