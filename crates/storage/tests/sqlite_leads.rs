@@ -197,3 +197,16 @@ async fn restores_data_from_a_backup() {
     assert_eq!(restored.list().await.unwrap(), vec![saved]);
     assert!(store.backup_to(&copy).await.is_err());
 }
+
+#[tokio::test]
+async fn finds_uppercase_spanish_names_from_lowercase_queries() {
+    let database = TempDatabase::new();
+    let store = SqliteLeads::open(&database.path()).await.unwrap();
+    store
+        .import(&[prospect("PEÑA ÁLVAREZ JUAN", ProspectKind::Person, 1)])
+        .await
+        .unwrap();
+
+    assert_eq!(store.search("peña", 10).await.unwrap().len(), 1);
+    assert_eq!(store.search("álvarez", 10).await.unwrap().len(), 1);
+}

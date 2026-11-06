@@ -34,10 +34,10 @@ const INSERT_PROSPECT: &str = "INSERT INTO prospects (kind, name, profile, conce
 const SEARCH_PROSPECTS: &str = "SELECT kind, name, profile, concessions, hectares, departments,
         provinces, substances, concession_states, potential_service, needs_review, source
     FROM prospects
-    WHERE name LIKE ?1 ESCAPE '\\'
-        OR departments LIKE ?1 ESCAPE '\\'
-        OR provinces LIKE ?1 ESCAPE '\\'
-        OR potential_service LIKE ?1 ESCAPE '\\'
+    WHERE name LIKE ?1 ESCAPE '\\' OR name LIKE ?3 ESCAPE '\\'
+        OR departments LIKE ?1 ESCAPE '\\' OR departments LIKE ?3 ESCAPE '\\'
+        OR provinces LIKE ?1 ESCAPE '\\' OR provinces LIKE ?3 ESCAPE '\\'
+        OR potential_service LIKE ?1 ESCAPE '\\' OR potential_service LIKE ?3 ESCAPE '\\'
     ORDER BY needs_review, concessions DESC, name
     LIMIT ?2";
 
@@ -159,6 +159,8 @@ impl ProspectRepository for SqliteLeads {
         let rows = sqlx::query(SEARCH_PROSPECTS)
             .bind(like_pattern(query))
             .bind(i64::from(limit))
+            // SQLite folds case for ASCII only, and source data is uppercase.
+            .bind(like_pattern(&query.to_uppercase()))
             .fetch_all(&self.pool)
             .await
             .map_err(failure)?;
