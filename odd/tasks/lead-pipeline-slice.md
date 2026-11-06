@@ -31,3 +31,4 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - L5 (2026-11-06): The user asked "no seria mejor el stack rust + go + Mygo ??". Decision: stay on Rust; no second language.
 - L6 (2026-11-06): Verification: 17 tests pass, clippy passes with warnings denied, release build 10.4 MB, about 213 MB idle PSS on Linux. The date fix and full click-through in the window are pending user confirmation. Windows is untested.
 - Next: confirm the fix in the window, validate S5 and S7 with the client, then add backups.
+- L7 (2026-11-06): Native review of 0d167ad..bd93a86 was granted, approved and acknowledged (lineage `review-dcf381afd374b049`). The full branch exceeded the review context budget because of the initial `Cargo.lock`, so domain commit 0d167ad was not reviewed. Advisory findings for later work: `R3-duplicate-submit`, `R3-stale-today`, `R3-startup-error-masked`, `R3-app-flow-unproved`.
