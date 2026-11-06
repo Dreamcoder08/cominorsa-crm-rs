@@ -13,6 +13,12 @@ cargo run --release -p cominorsa-desktop
 
 Data is stored in the operating system's application data folder as `crm.db`. Set `COMINORSA_DB_PATH` to use another file.
 
+## Windows
+
+The `Windows build` workflow runs the tests and publishes `cominorsa-crm-windows-x64.zip` as a workflow artifact. The package holds `cominorsa-desktop.exe` and `cominorsa-import.exe`, and never customer data.
+
+Data lives in `%APPDATA%\COMINORSA\CRM\data\crm.db`.
+
 ## Import prospects
 
 Keep source files outside this repository.
@@ -45,7 +51,7 @@ Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adap
 | Prospects | Concession titleholders without phone, RUC, or email; potential service is inferred, not verified |
 | Backups | Automatic only before an import; no scheduled backup yet |
 | Disk encryption | Not provided by the app; enable it on the laptop |
-| Windows | Not built or tested yet |
+| Windows | Built by `.github/workflows/windows.yml`; requires the WebView2 runtime |
 
 ## Measured baseline
 
