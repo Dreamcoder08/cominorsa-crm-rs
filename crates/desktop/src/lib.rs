@@ -1,19 +1,26 @@
 //! Desktop adapter: Dioxus views over the domain and storage crates.
 
-use std::{env, path::PathBuf};
+use std::{env, fs, path::PathBuf};
 
 mod presentation;
+mod settings_view;
 mod views;
 
-use cominorsa_domain::{Lead, LeadRepository, NewLead, Prospect, ProspectRepository};
+use cominorsa_domain::{
+    Lead, LeadRepository, NewLead, Prospect, ProspectRepository, Settings, SettingsRepository,
+};
 use cominorsa_storage::SqliteLeads;
 use dioxus::prelude::*;
 use directories::ProjectDirs;
 use time::{Date, OffsetDateTime, format_description::well_known::Iso8601, macros::offset};
 use uuid::Uuid;
 
-pub use presentation::{FollowUp, PipelineSummary, format_date, matches_query, profile_label};
-pub use views::{LeadForm, Prospects, Section, Shell, Workspace};
+pub use presentation::{
+    AgendaGroups, FollowUp, PipelineSummary, format_date, matches_query, next_follow_up,
+    profile_label,
+};
+pub use settings_view::SettingsView;
+pub use views::{Agenda, LeadForm, Prospects, Section, Shell, Workspace};
 
 const STYLE: &str = include_str!("style.css");
 const DATABASE_PATH_VARIABLE: &str = "COMINORSA_DB_PATH";
@@ -83,6 +90,23 @@ fn database_path() -> Result<PathBuf, String> {
         .ok_or_else(|| "No se encontró la carpeta de datos".to_owned())
 }
 
+/// Writes a timestamped copy next to the database and returns its path.
+async fn create_backup(store: SqliteLeads) -> Result<PathBuf, String> {
+    let directory = database_path()?
+        .parent()
+        .map(|parent| parent.join("copias"))
+        .ok_or_else(|| "No se encontró la carpeta de copias".to_owned())?;
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let stamp = OffsetDateTime::now_utc().unix_timestamp();
+    let path = directory.join(format!("crm-{stamp}.db"));
+
+    store
+        .backup_to(&path)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(path)
+}
+
 async fn open_store() -> Result<SqliteLeads, String> {
     let path = database_path()?;
     SqliteLeads::open(&path)
@@ -96,7 +120,15 @@ pub fn App() -> Element {
     let mut leads = use_signal(Vec::<Lead>::new);
     let mut startup_error = use_signal(|| None::<String>);
     let mut form_error = use_signal(String::new);
-    let mut form = use_signal(|| FormValues::starting_on(today_in_peru()));
+    let mut settings = use_signal(Settings::default);
+    let mut backup_notice = use_signal(String::new);
+    let new_form = move || {
+        FormValues::starting_on(next_follow_up(
+            today_in_peru(),
+            settings.read().follow_up_days(),
+        ))
+    };
+    let mut form = use_signal(new_form);
     let mut saving = use_signal(|| false);
     let mut panel_open = use_signal(|| false);
     let mut query = use_signal(String::new);
@@ -119,13 +151,16 @@ pub fn App() -> Element {
         let loaded = async {
             let opened = open_store().await?;
             let list = opened.list().await.map_err(|error| error.to_string())?;
-            Ok::<_, String>((opened, list))
+            let saved = opened.load().await.map_err(|error| error.to_string())?;
+            Ok::<_, String>((opened, list, saved))
         };
 
         match loaded.await {
-            Ok((opened, list)) => {
+            Ok((opened, list, saved)) => {
                 store.set(Some(opened));
                 leads.set(list);
+                settings.set(saved);
+                form.set(new_form());
             }
             Err(message) => startup_error.set(Some(message)),
         }
@@ -149,7 +184,7 @@ pub fn App() -> Element {
                     leads.set(list);
                     form_error.set(String::new());
                     if from_form {
-                        form.set(FormValues::starting_on(today_in_peru()));
+                        form.set(new_form());
                         panel_open.set(false);
                     }
                 }
@@ -159,8 +194,11 @@ pub fn App() -> Element {
         });
     };
 
+    let theme = settings.read().theme.code();
+
     rsx! {
         style { {STYLE} }
+        div { class: "app", "data-theme": theme,
         if let Some(message) = startup_error() {
             p { class: "banner", role: "alert", "{message}" }
         }
@@ -168,7 +206,42 @@ pub fn App() -> Element {
             section: section(),
             today: today_in_peru(),
             on_section: move |next| section.set(next),
-            if section() == Section::Pipeline {
+            if section() == Section::Settings {
+                SettingsView {
+                    settings: settings(),
+                    database: database_path().map_or_else(|error| error, |path| path.display().to_string()),
+                    notice: backup_notice(),
+                    on_change: move |next: Settings| {
+                        settings.set(next.clone());
+                        form.set(new_form());
+                        let Some(repository) = store.read().clone() else {
+                            return;
+                        };
+                        spawn(async move {
+                            if let Err(failure) = repository.persist(&next).await {
+                                startup_error.set(Some(failure.to_string()));
+                            }
+                        });
+                    },
+                    on_backup: move |_| {
+                        let Some(repository) = store.read().clone() else {
+                            return;
+                        };
+                        spawn(async move {
+                            backup_notice.set(match create_backup(repository).await {
+                                Ok(path) => format!("Copia creada en {}", path.display()),
+                                Err(failure) => failure,
+                            });
+                        });
+                    },
+                }
+            } else if section() == Section::Agenda {
+                Agenda {
+                    leads: leads(),
+                    today: today_in_peru(),
+                    on_open_pipeline: move |_| section.set(Section::Pipeline),
+                }
+            } else if section() == Section::Pipeline {
                 Workspace {
                     leads: leads(),
                     today: today_in_peru(),
@@ -232,6 +305,7 @@ pub fn App() -> Element {
                 },
                 on_close: move |_| panel_open.set(false),
             }
+        }
         }
     }
 }

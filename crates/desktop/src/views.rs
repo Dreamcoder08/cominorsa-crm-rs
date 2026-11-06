@@ -5,14 +5,23 @@ use dioxus::prelude::*;
 use time::Date;
 use uuid::Uuid;
 
-use crate::{FollowUp, FormValues, PipelineSummary, format_date, matches_query, profile_label};
+use crate::{
+    AgendaGroups, FollowUp, FormValues, PipelineSummary, format_date, matches_query, profile_label,
+};
 
 const SERVICES: [&str; 5] = ["REINFO", "IGAFOM", "DAC", "ESTAMIN", "Plan de minado"];
+
+const ICON_PIPELINE: &str = "M4 4h4v16H4zM10 4h4v10h-4zM16 4h4v13h-4z";
+const ICON_AGENDA: &str = "M4 6h16v14H4zM4 10h16M8 3v5M16 3v5";
+const ICON_PROSPECTS: &str = "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM21 21l-5-5";
+const ICON_SETTINGS: &str = "M4 7h10M18 7h2M4 17h2M10 17h10M14 5h4v4h-4zM6 15h4v4H6z";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
     Pipeline,
+    Agenda,
     Prospects,
+    Settings,
 }
 
 #[component]
@@ -22,36 +31,100 @@ pub fn Shell(
     on_section: EventHandler<Section>,
     children: Element,
 ) -> Element {
-    let nav = |target: Section| {
-        if section == target {
-            "nav-item active"
-        } else {
-            "nav-item"
-        }
-    };
-
     rsx! {
         div { class: "shell",
             aside { class: "sidebar",
                 div { class: "brand",
                     span { class: "brand-mark", "C" }
-                    span { "COMINORSA" }
+                    span { class: "brand-name", "COMINORSA" }
                 }
-                nav { aria_label: "Secciones",
-                    button {
-                        class: nav(Section::Pipeline),
-                        onclick: move |_| on_section.call(Section::Pipeline),
-                        "Embudo"
-                    }
-                    button {
-                        class: nav(Section::Prospects),
-                        onclick: move |_| on_section.call(Section::Prospects),
-                        "Prospectos"
-                    }
+                nav { class: "nav", aria_label: "Secciones",
+                    NavItem { target: Section::Pipeline, current: section, label: "Embudo", icon: ICON_PIPELINE, on_section }
+                    NavItem { target: Section::Agenda, current: section, label: "Agenda", icon: ICON_AGENDA, on_section }
+                    NavItem { target: Section::Prospects, current: section, label: "Prospectos", icon: ICON_PROSPECTS, on_section }
                 }
-                p { class: "sidebar-date", "{format_date(today)}" }
+                nav { class: "nav nav-bottom", aria_label: "Preferencias",
+                    NavItem { target: Section::Settings, current: section, label: "Configuración", icon: ICON_SETTINGS, on_section }
+                }
             }
-            main { class: "content", {children} }
+            main { class: "content", title: "{format_date(today)}", {children} }
+        }
+    }
+}
+
+#[component]
+fn NavItem(
+    target: Section,
+    current: Section,
+    label: &'static str,
+    icon: &'static str,
+    on_section: EventHandler<Section>,
+) -> Element {
+    let is_current = target == current;
+
+    rsx! {
+        button {
+            class: if is_current { "nav-item active" } else { "nav-item" },
+            title: label,
+            aria_current: if is_current { "page" },
+            onclick: move |_| on_section.call(target),
+            svg { class: "icon", view_box: "0 0 24 24", "aria-hidden": "true", path { d: icon } }
+            span { class: "nav-label", "{label}" }
+        }
+    }
+}
+
+#[component]
+pub fn Agenda(leads: Vec<Lead>, today: Date, on_open_pipeline: EventHandler<()>) -> Element {
+    let groups = AgendaGroups::of(&leads, today);
+    let is_empty = groups.is_empty();
+
+    rsx! {
+        header { class: "topbar",
+            div {
+                h1 { "Agenda" }
+                p { class: "subtitle", "Hoy es {format_date(today)}" }
+            }
+        }
+        if is_empty {
+            section { class: "empty",
+                h2 { "Nada pendiente" }
+                p { "No hay seguimientos para los próximos 7 días." }
+                button { class: "primary", onclick: move |_| on_open_pipeline.call(()), "Ver embudo" }
+            }
+        } else {
+            AgendaGroup { title: "Vencidos", leads: groups.overdue, today }
+            AgendaGroup { title: "Hoy", leads: groups.today, today }
+            AgendaGroup { title: "Próximos 7 días", leads: groups.upcoming, today }
+        }
+    }
+}
+
+#[component]
+fn AgendaGroup(title: &'static str, leads: Vec<Lead>, today: Date) -> Element {
+    if leads.is_empty() {
+        return rsx! {};
+    }
+
+    rsx! {
+        section { class: "agenda-group",
+            h2 { "{title} · {leads.len()}" }
+            div { class: "agenda-list",
+                for lead in leads {
+                    {
+                        let status = FollowUp::of(&lead, today);
+                        rsx! {
+                            div { class: "agenda-row", key: "{lead.id()}",
+                                div {
+                                    strong { "{lead.name()}" }
+                                    span { class: "detail", "{lead.service()} · {lead.phone()}" }
+                                }
+                                span { class: "status {status.class()}", "{status.label()}" }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -97,9 +170,9 @@ pub fn Prospects(
                             th { "Titular" }
                             th { "Perfil" }
                             th { class: "numeric", "Concesiones" }
-                            th { class: "numeric", "Hectáreas" }
-                            th { "Departamentos" }
-                            th { "Servicio potencial" }
+                            th { class: "numeric hide-tablet", "Hectáreas" }
+                            th { class: "hide-phone", "Departamentos" }
+                            th { class: "hide-tablet", "Servicio potencial" }
                             th { span { class: "visually-hidden", "Acción" } }
                         }
                     }
@@ -112,9 +185,9 @@ pub fn Prospects(
                                 }
                                 td { "{profile_label(&prospect.profile)}" }
                                 td { class: "numeric", "{prospect.concessions}" }
-                                td { class: "numeric", "{prospect.hectares:.0}" }
-                                td { "{prospect.departments}" }
-                                td { "{prospect.potential_service}" }
+                                td { class: "numeric hide-tablet", "{prospect.hectares:.0}" }
+                                td { class: "hide-phone", "{prospect.departments}" }
+                                td { class: "hide-tablet", "{prospect.potential_service}" }
                                 td {
                                     button {
                                         class: "secondary",

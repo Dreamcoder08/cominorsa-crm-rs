@@ -1,8 +1,9 @@
 use cominorsa_desktop::{
-    FollowUp, FormValues, LeadForm, PipelineSummary, Prospects, Workspace, format_date,
-    matches_query, parse_form, profile_label,
+    Agenda, AgendaGroups, FollowUp, FormValues, LeadForm, PipelineSummary, Prospects, Section,
+    SettingsView, Shell, Workspace, format_date, matches_query, next_follow_up, parse_form,
+    profile_label,
 };
-use cominorsa_domain::{Lead, NewLead, Prospect, ProspectKind};
+use cominorsa_domain::{Lead, NewLead, Prospect, ProspectKind, Settings, ThemePreference};
 use dioxus::prelude::*;
 use time::{Date, macros::date};
 
@@ -281,4 +282,109 @@ fn labels_prospect_profiles() {
     assert_eq!(profile_label("MIXTO_1_y_2"), "Mixto");
     assert_eq!(profile_label("OTRO_estado"), "Por revisar");
     assert_eq!(profile_label("NUEVO"), "NUEVO");
+}
+
+fn shell_view() -> Element {
+    rsx! {
+        Shell {
+            section: Section::Settings,
+            today: TODAY,
+            on_section: |_| {},
+            p { "Contenido" }
+        }
+    }
+}
+
+#[test]
+fn shows_every_section_and_marks_the_current_one() {
+    let html = render(shell_view);
+
+    for label in [
+        "Embudo",
+        "Agenda",
+        "Prospectos",
+        "Configuración",
+        "Contenido",
+    ] {
+        assert!(html.contains(label), "missing {label}");
+    }
+    assert_eq!(html.matches("aria-current=\"page\"").count(), 1);
+}
+
+fn settings_view() -> Element {
+    let mut settings = Settings::default();
+    settings.theme = ThemePreference::Dark;
+    settings.add_member("Ana").unwrap();
+
+    rsx! {
+        SettingsView {
+            settings,
+            database: "/datos/crm.db".to_owned(),
+            notice: "Copia creada".to_owned(),
+            on_change: |_| {},
+            on_backup: |_| {},
+        }
+    }
+}
+
+#[test]
+fn shows_theme_team_follow_up_and_data_settings() {
+    let html = render(settings_view);
+
+    for text in ["Apariencia", "Sistema", "Claro", "Oscuro", "Equipo", "Ana"] {
+        assert!(html.contains(text), "missing {text}");
+    }
+    assert!(html.contains("Crear copia de seguridad"));
+    assert!(html.contains("/datos/crm.db"));
+    assert!(html.contains("Copia creada"));
+    assert_eq!(html.matches("aria-pressed=\"true\"").count(), 1);
+}
+
+#[test]
+fn groups_the_agenda_by_urgency() {
+    let leads = vec![
+        sample("Atrasada", date!(2026 - 11 - 01), 0),
+        sample("Hoy", TODAY, 1),
+        sample("Semana", date!(2026 - 11 - 13), 0),
+        sample("Lejana", date!(2026 - 11 - 14), 0),
+        sample("Cerrada", date!(2026 - 11 - 01), 3),
+    ];
+
+    let groups = AgendaGroups::of(&leads, TODAY);
+    let names = |group: &[Lead]| {
+        group
+            .iter()
+            .map(|lead| lead.name().to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(names(&groups.overdue), ["Atrasada"]);
+    assert_eq!(names(&groups.today), ["Hoy"]);
+    assert_eq!(names(&groups.upcoming), ["Semana"]);
+}
+
+fn agenda_view() -> Element {
+    rsx! {
+        Agenda { leads: leads(), today: TODAY, on_open_pipeline: |_| {} }
+    }
+}
+
+fn empty_agenda() -> Element {
+    rsx! {
+        Agenda { leads: Vec::new(), today: TODAY, on_open_pipeline: |_| {} }
+    }
+}
+
+#[test]
+fn renders_the_agenda_and_its_empty_state() {
+    let html = render(agenda_view);
+    assert!(html.contains("Vencidos"));
+    assert!(html.contains("Atrasada"));
+
+    assert!(render(empty_agenda).contains("Nada pendiente"));
+}
+
+#[test]
+fn computes_the_default_follow_up_date() {
+    assert_eq!(next_follow_up(TODAY, 3), date!(2026 - 11 - 09));
 }

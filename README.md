@@ -1,6 +1,6 @@
 # COMINORSA CRM
 
-Local desktop CRM written in Rust. It registers leads, moves them through the sales pipeline, searches them, summarizes which follow-ups are overdue or due today, and keeps a searchable prospect list that converts into leads.
+Local desktop CRM written in Rust. It registers leads, moves them through the sales pipeline, searches them, shows a follow-up agenda, and keeps a searchable prospect list that converts into leads. Settings cover the light, dark, or system theme, the team list, default follow-up days, and manual backups.
 
 ## Quick path
 
@@ -29,6 +29,10 @@ cargo run --release -p cominorsa-importer -- --db <crm.db> <companies.csv> <peop
 
 The importer validates both files first, copies an existing database next to it as `crm.before-import-*.db`, and skips titleholders already loaded. Errors name lines and columns, never values. Close the app before importing.
 
+## Design system
+
+Tokens live at the top of `crates/desktop/src/style.css` and use `light-dark()`, so each color is declared once for both themes. `crates/desktop/tests/contrast.rs` fails when a token pair drops below WCAG AA. Layout has three modes: full sidebar, icon rail at 1080 px, and bottom navigation at 720 px.
+
 ## Structure
 
 | Crate | Responsibility | May depend on |
@@ -49,9 +53,9 @@ Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adap
 | Follow-up alerts | Visible only while the app is open |
 | Leads from the website or WhatsApp | Registered manually; there is no automatic intake |
 | Prospects | Concession titleholders without phone, RUC, or email; potential service is inferred, not verified |
-| Backups | Automatic only before an import; no scheduled backup yet |
+| Backups | Manual from Settings and automatic before an import; no scheduled backup yet |
 | Disk encryption | Not provided by the app; enable it on the laptop |
-| Windows | Built by `.github/workflows/windows.yml`; requires the WebView2 runtime |
+| Windows | Cross-compiled with `cargo zigbuild --target x86_64-pc-windows-gnu`; not run on Windows yet; requires the WebView2 runtime. The `.github/workflows/windows.yml` build needs an active GitHub billing state |
 
 ## Measured baseline
 
