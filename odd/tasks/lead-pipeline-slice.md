@@ -14,12 +14,14 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - S7. Move a lead through pipeline stages. Assumption: stages come from a pasted proposal and need client validation: "1. Contacto inicial -> 2. Evaluación de coordenadas -> 3. Cotización enviada -> 4. Contrato firmado".
 - S8. Show leads whose follow-up date is overdue or due today. Assumption: alerts appear inside the open app only.
 - S9. Data persists across restarts in a local SQLite file. No customer data enters this repository; fixtures are synthetic.
+- S10. Improve the desktop UI and UX. User: "no hay forma de mejora el diseño ui & Ux ?". Assumption: the slice keeps the existing lead fields and stages.
 
 ## Tasks
 
 - [x] T1. S1, S2, S5-S7: workspace and domain model. Route: inline. Commit: 0d167ad.
 - [x] T2. S8, S9: SQLite storage adapter. Route: inline. Commit: d998a7b.
 - [x] T3. S3, S4, S5, S7, S8: Dioxus desktop UI. Route: inline. Commit: bd93a86.
+- [x] T4. S10: redesigned workspace, metrics, search, follow-up status and lead panel. Route: inline. Commit: 1671ed5.
 
 ## Log
 
@@ -35,3 +37,5 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - L8 (2026-11-06, user answer, verbatim): "lo va a usar el dueño que es mi prima y su novio que tambien es su socio". Two users are confirmed; whether they share one device is unanswered.
 - L9 (2026-11-06, user answer, verbatim): "si por el momento los 2 usan la misma laptop". No network mode or login is needed for now.
 - L10 (2026-11-06): Fixed `R3-duplicate-submit` in 9aed357. 18 tests pass and clippy is clean; the fix was not exercised in the live window.
+- L11 (2026-11-06, user request, verbatim): "perfecto solo eso ?? y mas automatizacion o mas ? no hay forma de mejora el diseño ui & Ux ?".
+- L12 (2026-11-06): Redesign committed in 1671ed5. 23 tests pass. A real-window capture with synthetic data confirmed the workspace, metrics, status chips and removed menu. The new-lead panel, Escape, and search were not exercised in the live window.
