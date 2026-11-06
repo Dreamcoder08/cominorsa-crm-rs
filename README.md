@@ -42,4 +42,4 @@ Measured on Linux with WebKitGTK and an empty database: 10.4 MB release binary a
 
 - Never commit customer data, credentials, or real exports. Fixtures are synthetic.
 - Write a failing test before each behavior change.
-- Run `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo fmt --all -- --check` before committing.
+- Run `scripts/check.sh` before committing. It runs `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and the workspace tests (with cargo-nextest when installed). `scripts/check.sh --full` also runs `cargo deny check` and reports the release binary size; it exits with status 2 when cargo-deny is missing.
