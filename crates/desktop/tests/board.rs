@@ -1,13 +1,18 @@
-use cominorsa_desktop::{Board, FormValues, LeadForm, parse_form};
+use cominorsa_desktop::{
+    FollowUp, FormValues, LeadForm, PipelineSummary, Workspace, format_date, matches_query,
+    parse_form,
+};
 use cominorsa_domain::{Lead, NewLead};
 use dioxus::prelude::*;
-use time::macros::date;
+use time::{Date, macros::date};
 
-fn sample(name: &str, follow_up_on: time::Date, advances: usize) -> Lead {
+const TODAY: Date = date!(2026 - 11 - 06);
+
+fn sample(name: &str, follow_up_on: Date, advances: usize) -> Lead {
     let mut lead = Lead::create(NewLead {
         name: name.to_owned(),
         phone: "900000000".to_owned(),
-        ruc: None,
+        ruc: Some("20123456786".to_owned()),
         service: "DAC".to_owned(),
         follow_up_on,
     })
@@ -18,27 +23,75 @@ fn sample(name: &str, follow_up_on: time::Date, advances: usize) -> Lead {
     lead
 }
 
-fn harness() -> Element {
-    let leads = vec![
+fn leads() -> Vec<Lead> {
+    vec![
         sample("Atrasada", date!(2026 - 11 - 01), 0),
         sample("Futura", date!(2026 - 12 - 01), 1),
         sample("Cerrada", date!(2026 - 11 - 01), 3),
-    ];
-
-    rsx! {
-        Board { leads, today: date!(2026 - 11 - 06), on_advance: |_| {} }
-    }
+    ]
 }
 
-fn render_board() -> String {
-    let mut dom = VirtualDom::new(harness);
+fn render(component: fn() -> Element) -> String {
+    let mut dom = VirtualDom::new(component);
     dom.rebuild_in_place();
     dioxus_ssr::render(&dom)
 }
 
+fn workspace_with_leads() -> Element {
+    rsx! {
+        Workspace {
+            leads: leads(),
+            today: TODAY,
+            query: String::new(),
+            on_query: |_| {},
+            on_new: |_| {},
+            on_advance: |_| {},
+        }
+    }
+}
+
+fn workspace_without_matches() -> Element {
+    rsx! {
+        Workspace {
+            leads: leads(),
+            today: TODAY,
+            query: "inexistente".to_owned(),
+            on_query: |_| {},
+            on_new: |_| {},
+            on_advance: |_| {},
+        }
+    }
+}
+
+fn empty_workspace() -> Element {
+    rsx! {
+        Workspace {
+            leads: Vec::new(),
+            today: TODAY,
+            query: String::new(),
+            on_query: |_| {},
+            on_new: |_| {},
+            on_advance: |_| {},
+        }
+    }
+}
+
+fn form_with_error() -> Element {
+    rsx! {
+        LeadForm {
+            values: FormValues::default(),
+            saving: true,
+            error: "El RUC no es válido".to_owned(),
+            on_change: |_| {},
+            on_submit: |_| {},
+            on_close: |_| {},
+        }
+    }
+}
+
 #[test]
 fn renders_every_pipeline_stage_with_its_leads() {
-    let html = render_board();
+    let html = render(workspace_with_leads);
 
     for label in [
         "Contacto inicial",
@@ -52,16 +105,76 @@ fn renders_every_pipeline_stage_with_its_leads() {
 }
 
 #[test]
-fn reports_only_open_overdue_leads() {
-    let html = render_board();
+fn summarizes_the_pipeline() {
+    let mut leads = leads();
+    leads.push(sample("Hoy", TODAY, 0));
 
-    assert!(html.contains("1 seguimiento pendiente"));
-    assert_eq!(html.matches("Vence: 2026-11-01").count(), 1);
+    assert_eq!(
+        PipelineSummary::of(&leads, TODAY),
+        PipelineSummary {
+            active: 3,
+            overdue: 1,
+            due_today: 1,
+            signed: 1,
+        }
+    );
 }
 
 #[test]
-fn offers_no_advance_action_for_signed_contracts() {
-    assert_eq!(render_board().matches("Avanzar").count(), 2);
+fn describes_follow_up_status() {
+    let of = |date, advances| FollowUp::of(&sample("Lead", date, advances), TODAY).label();
+
+    assert_eq!(of(date!(2026 - 11 - 01), 0), "Vencido hace 5 días");
+    assert_eq!(of(date!(2026 - 11 - 05), 0), "Vencido hace 1 día");
+    assert_eq!(of(TODAY, 0), "Vence hoy");
+    assert_eq!(of(date!(2026 - 12 - 01), 0), "Seguimiento 01/12/2026");
+    assert_eq!(of(date!(2026 - 11 - 01), 3), "Cerrado");
+}
+
+#[test]
+fn shows_status_on_cards_and_no_advance_for_signed_contracts() {
+    let html = render(workspace_with_leads);
+
+    assert_eq!(html.matches("Vencido hace 5 días").count(), 1);
+    assert_eq!(html.matches(">Avanzar<").count(), 2);
+}
+
+#[test]
+fn searches_name_phone_ruc_and_service_ignoring_case() {
+    let lead = sample("Minera Ejemplo", TODAY, 0);
+
+    for query in ["minera", "900000", "2012345", "dac", "  EJEMPLO  ", ""] {
+        assert!(matches_query(&lead, query), "{query} must match");
+    }
+    assert!(!matches_query(&lead, "otra"));
+}
+
+#[test]
+fn explains_an_empty_search() {
+    let html = render(workspace_without_matches);
+
+    assert!(html.contains("Sin resultados"));
+    assert!(!html.contains("Atrasada"));
+}
+
+#[test]
+fn invites_the_first_lead_on_an_empty_workspace() {
+    assert!(render(empty_workspace).contains("Registra tu primer lead"));
+}
+
+#[test]
+fn formats_dates_for_peru() {
+    assert_eq!(format_date(date!(2026 - 11 - 06)), "06/11/2026");
+}
+
+#[test]
+fn shows_errors_in_the_form_and_blocks_a_second_submit() {
+    let html = render(form_with_error);
+
+    assert!(html.contains("role=\"alert\""));
+    assert!(html.contains("El RUC no es válido"));
+    assert!(html.contains("disabled"));
+    assert!(html.contains("Guardando"));
 }
 
 fn form(date: &str, ruc: &str) -> FormValues {
@@ -96,29 +209,8 @@ fn explains_invalid_form_values() {
 
 #[test]
 fn starts_the_form_with_a_real_follow_up_date() {
-    let values = FormValues::starting_on(date!(2026 - 11 - 06));
+    let values = FormValues::starting_on(TODAY);
 
     assert_eq!(values.follow_up_on, "2026-11-06");
     assert!(values.name.is_empty());
-}
-
-fn saving_form() -> Element {
-    rsx! {
-        LeadForm {
-            values: FormValues::default(),
-            saving: true,
-            on_change: |_| {},
-            on_submit: |_| {},
-        }
-    }
-}
-
-#[test]
-fn blocks_a_second_submit_while_saving() {
-    let mut dom = VirtualDom::new(saving_form);
-    dom.rebuild_in_place();
-    let html = dioxus_ssr::render(&dom);
-
-    assert!(html.contains("disabled"));
-    assert!(html.contains("Guardando"));
 }

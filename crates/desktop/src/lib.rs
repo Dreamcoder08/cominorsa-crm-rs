@@ -2,12 +2,18 @@
 
 use std::{env, path::PathBuf};
 
-use cominorsa_domain::{Lead, LeadRepository, NewLead, Stage};
+mod presentation;
+mod views;
+
+use cominorsa_domain::{Lead, LeadRepository, NewLead};
 use cominorsa_storage::SqliteLeads;
 use dioxus::prelude::*;
 use directories::ProjectDirs;
 use time::{Date, OffsetDateTime, format_description::well_known::Iso8601, macros::offset};
 use uuid::Uuid;
+
+pub use presentation::{FollowUp, PipelineSummary, format_date, matches_query};
+pub use views::{LeadForm, Workspace};
 
 const STYLE: &str = include_str!("style.css");
 const DATABASE_PATH_VARIABLE: &str = "COMINORSA_DB_PATH";
@@ -72,9 +78,12 @@ async fn open_store() -> Result<SqliteLeads, String> {
 pub fn App() -> Element {
     let mut store = use_signal(|| None::<SqliteLeads>);
     let mut leads = use_signal(Vec::<Lead>::new);
-    let mut error = use_signal(|| None::<String>);
+    let mut startup_error = use_signal(|| None::<String>);
+    let mut form_error = use_signal(String::new);
     let mut form = use_signal(|| FormValues::starting_on(today_in_peru()));
     let mut saving = use_signal(|| false);
+    let mut panel_open = use_signal(|| false);
+    let mut query = use_signal(String::new);
 
     use_future(move || async move {
         let loaded = async {
@@ -88,13 +97,13 @@ pub fn App() -> Element {
                 store.set(Some(opened));
                 leads.set(list);
             }
-            Err(message) => error.set(Some(message)),
+            Err(message) => startup_error.set(Some(message)),
         }
     });
 
-    let mut persist = move |lead: Lead, clear_form: bool| {
+    let mut persist = move |lead: Lead, from_form: bool| {
         let Some(repository) = store.read().clone() else {
-            error.set(Some("La base de datos todavía no está lista".to_owned()));
+            form_error.set("La base de datos todavía no está lista".to_owned());
             return;
         };
 
@@ -108,12 +117,13 @@ pub fn App() -> Element {
             match saved.await {
                 Ok(list) => {
                     leads.set(list);
-                    error.set(None);
-                    if clear_form {
+                    form_error.set(String::new());
+                    if from_form {
                         form.set(FormValues::starting_on(today_in_peru()));
+                        panel_open.set(false);
                     }
                 }
-                Err(failure) => error.set(Some(failure.to_string())),
+                Err(failure) => form_error.set(failure.to_string()),
             }
             saving.set(false);
         });
@@ -121,14 +131,35 @@ pub fn App() -> Element {
 
     rsx! {
         style { {STYLE} }
-        main {
-            h1 { "COMINORSA CRM" }
-            if let Some(message) = error() {
-                p { class: "error", role: "alert", "{message}" }
-            }
+        if let Some(message) = startup_error() {
+            p { class: "banner", role: "alert", "{message}" }
+        }
+        Workspace {
+            leads: leads(),
+            today: today_in_peru(),
+            query: query(),
+            on_query: move |value| query.set(value),
+            on_new: move |_| {
+                form_error.set(String::new());
+                panel_open.set(true);
+            },
+            on_advance: move |id: Uuid| {
+                if saving() {
+                    return;
+                }
+                let Some(mut lead) = leads.read().iter().find(|lead| lead.id() == id).cloned() else {
+                    return;
+                };
+                if lead.advance().is_ok() {
+                    persist(lead, false);
+                }
+            },
+        }
+        if panel_open() {
             LeadForm {
                 values: form(),
                 saving: saving(),
+                error: form_error(),
                 on_change: move |values| form.set(values),
                 on_submit: move |_| {
                     if saving() {
@@ -136,127 +167,10 @@ pub fn App() -> Element {
                     }
                     match parse_form(form()) {
                         Ok(lead) => persist(lead, true),
-                        Err(message) => error.set(Some(message)),
+                        Err(message) => form_error.set(message),
                     }
                 },
-            }
-            Board {
-                leads: leads(),
-                today: today_in_peru(),
-                on_advance: move |id: Uuid| {
-                    if saving() {
-                        return;
-                    }
-                    let Some(mut lead) = leads.read().iter().find(|lead| lead.id() == id).cloned() else {
-                        return;
-                    };
-                    match lead.advance() {
-                        Ok(()) => persist(lead, false),
-                        Err(failure) => error.set(Some(failure.to_string())),
-                    }
-                },
-            }
-        }
-    }
-}
-
-#[component]
-pub fn LeadForm(
-    values: FormValues,
-    saving: bool,
-    on_change: EventHandler<FormValues>,
-    on_submit: EventHandler<()>,
-) -> Element {
-    let edit = |update: fn(&mut FormValues, String)| {
-        let values = values.clone();
-        move |event: FormEvent| {
-            let mut next = values.clone();
-            update(&mut next, event.value());
-            on_change.call(next);
-        }
-    };
-
-    rsx! {
-        form {
-            onsubmit: move |event| {
-                event.prevent_default();
-                on_submit.call(());
-            },
-            label { "Nombre o razón social"
-                input { value: "{values.name}", oninput: edit(|v, text| v.name = text) }
-            }
-            label { "Teléfono"
-                input { value: "{values.phone}", oninput: edit(|v, text| v.phone = text) }
-            }
-            label { "RUC (opcional)"
-                input { value: "{values.ruc}", oninput: edit(|v, text| v.ruc = text) }
-            }
-            label { "Servicio"
-                input { value: "{values.service}", oninput: edit(|v, text| v.service = text) }
-            }
-            label { "Próximo seguimiento"
-                input {
-                    r#type: "date",
-                    value: "{values.follow_up_on}",
-                    oninput: edit(|v, text| v.follow_up_on = text),
-                }
-            }
-            button {
-                r#type: "submit",
-                disabled: saving,
-                if saving { "Guardando…" } else { "Registrar lead" }
-            }
-        }
-    }
-}
-
-#[component]
-pub fn Board(leads: Vec<Lead>, today: Date, on_advance: EventHandler<Uuid>) -> Element {
-    let due = leads
-        .iter()
-        .filter(|lead| lead.is_follow_up_due(today))
-        .count();
-    let summary = match due {
-        0 => "Sin seguimientos pendientes".to_owned(),
-        1 => "1 seguimiento pendiente".to_owned(),
-        count => format!("{count} seguimientos pendientes"),
-    };
-
-    rsx! {
-        p { class: "summary", "{summary}" }
-        section { class: "board",
-            for stage in Stage::ALL {
-                div { class: "column", key: "{stage.code()}",
-                    h2 { "{stage.label()}" }
-                    for lead in leads.iter().filter(|lead| lead.stage() == stage) {
-                        LeadCard {
-                            key: "{lead.id()}",
-                            lead: lead.clone(),
-                            is_due: lead.is_follow_up_due(today),
-                            on_advance,
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[component]
-fn LeadCard(lead: Lead, is_due: bool, on_advance: EventHandler<Uuid>) -> Element {
-    let id = lead.id();
-    let date_label = if is_due { "Vence" } else { "Seguimiento" };
-
-    rsx! {
-        article { class: if is_due { "card due" } else { "card" },
-            h3 { "{lead.name()}" }
-            p { "{lead.service()} · {lead.phone()}" }
-            if let Some(ruc) = lead.ruc() {
-                p { "RUC {ruc.as_str()}" }
-            }
-            p { "{date_label}: {lead.follow_up_on()}" }
-            if lead.stage() != Stage::ContractSigned {
-                button { onclick: move |_| on_advance.call(id), "Avanzar" }
+                on_close: move |_| panel_open.set(false),
             }
         }
     }

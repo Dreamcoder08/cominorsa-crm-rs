@@ -1,6 +1,6 @@
 # COMINORSA CRM
 
-Local desktop CRM written in Rust. It registers leads, moves them through the sales pipeline, and shows which follow-ups are due.
+Local desktop CRM written in Rust. It registers leads, moves them through the sales pipeline, searches them, and summarizes which follow-ups are overdue or due today.
 
 ## Quick path
 
