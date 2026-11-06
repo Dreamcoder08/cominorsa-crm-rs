@@ -4,3 +4,7 @@
 *.db-wal
 *.csv
 .env
+*.xlsx
+*.xls
+*.xlsm
+*.ods
