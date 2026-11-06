@@ -1,6 +1,8 @@
-use std::{env, fs, path::PathBuf};
+use std::{borrow::Cow, env, fs, path::PathBuf};
 
-use cominorsa_domain::{Lead, LeadRepository, NewLead, Stage};
+use cominorsa_domain::{
+    Lead, LeadRepository, NewLead, Prospect, ProspectKind, ProspectRepository, Stage,
+};
 use cominorsa_storage::SqliteLeads;
 use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
 use time::macros::date;
@@ -85,4 +87,113 @@ async fn refuses_to_return_a_corrupt_record() {
     raw.close().await;
 
     assert!(store.list().await.is_err());
+}
+
+fn prospect(name: &str, kind: ProspectKind, concessions: u32) -> Prospect {
+    Prospect {
+        name: name.to_owned(),
+        kind,
+        profile: "PERFIL_1_formalizacion".to_owned(),
+        concessions,
+        hectares: 100.5,
+        departments: "PIURA".to_owned(),
+        provinces: "SULLANA".to_owned(),
+        substances: "M".to_owned(),
+        concession_states: "TITULADA".to_owned(),
+        potential_service: "IGAFOM + REINFO".to_owned(),
+        needs_review: false,
+        source: "Synthetic".to_owned(),
+    }
+}
+
+#[tokio::test]
+async fn imports_prospects_once_and_keeps_them_across_reopen() {
+    let database = TempDatabase::new();
+    let store = SqliteLeads::open(&database.path()).await.unwrap();
+    let batch = vec![
+        prospect("Empresa Uno", ProspectKind::Company, 2),
+        prospect("Persona Dos", ProspectKind::Person, 5),
+    ];
+
+    assert_eq!(store.import(&batch).await.unwrap(), 2);
+    assert_eq!(store.import(&batch).await.unwrap(), 0);
+    store.close().await;
+
+    let reopened = SqliteLeads::open(&database.path()).await.unwrap();
+    assert_eq!(reopened.count().await.unwrap(), 2);
+    assert_eq!(
+        reopened.search("", 10).await.unwrap(),
+        vec![batch[1].clone(), batch[0].clone()]
+    );
+}
+
+#[tokio::test]
+async fn searches_prospects_with_a_limit_and_literal_wildcards() {
+    let database = TempDatabase::new();
+    let store = SqliteLeads::open(&database.path()).await.unwrap();
+    store
+        .import(&[
+            prospect("Minera Alfa", ProspectKind::Company, 1),
+            prospect("Minera Beta", ProspectKind::Company, 2),
+            prospect("Otra 100% Gamma", ProspectKind::Person, 3),
+        ])
+        .await
+        .unwrap();
+
+    assert_eq!(store.search("minera", 10).await.unwrap().len(), 2);
+    assert_eq!(store.search("sullana", 2).await.unwrap().len(), 2);
+    assert_eq!(store.search("100%", 10).await.unwrap().len(), 1);
+    assert!(store.search("%", 10).await.unwrap().len() == 1);
+    assert!(store.search("inexistente", 10).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn keeps_existing_leads_when_upgrading_from_the_first_schema() {
+    let database = TempDatabase::new();
+    fs::create_dir_all(database.path().parent().unwrap()).unwrap();
+    let options = SqliteConnectOptions::new()
+        .filename(database.path())
+        .create_if_missing(true);
+    let old = SqlitePool::connect_with(options).await.unwrap();
+    let mut first_schema = sqlx::migrate!("./migrations");
+    first_schema.migrations = Cow::Owned(
+        first_schema
+            .migrations
+            .iter()
+            .filter(|migration| migration.version == 1)
+            .cloned()
+            .collect(),
+    );
+    first_schema.run(&old).await.unwrap();
+    sqlx::query(
+        "INSERT INTO leads VALUES ('00000000-0000-7000-8000-000000000001', 'Antiguo',
+            '900000000', NULL, 'DAC', 'quote_sent', '2026-11-01')",
+    )
+    .execute(&old)
+    .await
+    .unwrap();
+    old.close().await;
+
+    let upgraded = SqliteLeads::open(&database.path()).await.unwrap();
+
+    let leads = upgraded.list().await.unwrap();
+    assert_eq!(leads.len(), 1);
+    assert_eq!(leads[0].name(), "Antiguo");
+    assert_eq!(leads[0].stage(), Stage::QuoteSent);
+    assert_eq!(upgraded.count().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn restores_data_from_a_backup() {
+    let database = TempDatabase::new();
+    let store = SqliteLeads::open(&database.path()).await.unwrap();
+    let saved = lead("Minera", date!(2026 - 11 - 01));
+    store.save(&saved).await.unwrap();
+    let copy = database.0.join("backup.db");
+
+    store.backup_to(&copy).await.unwrap();
+
+    let restored = SqliteLeads::open(&copy).await.unwrap();
+    assert_eq!(restored.list().await.unwrap(), vec![saved]);
+    assert!(store.backup_to(&copy).await.is_err());
 }
