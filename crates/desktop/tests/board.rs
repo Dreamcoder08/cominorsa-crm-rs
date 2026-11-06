@@ -1,8 +1,8 @@
 use cominorsa_desktop::{
-    FollowUp, FormValues, LeadForm, PipelineSummary, Workspace, format_date, matches_query,
-    parse_form,
+    FollowUp, FormValues, LeadForm, PipelineSummary, Prospects, Workspace, format_date,
+    matches_query, parse_form, profile_label,
 };
-use cominorsa_domain::{Lead, NewLead};
+use cominorsa_domain::{Lead, NewLead, Prospect, ProspectKind};
 use dioxus::prelude::*;
 use time::{Date, macros::date};
 
@@ -213,4 +213,72 @@ fn starts_the_form_with_a_real_follow_up_date() {
 
     assert_eq!(values.follow_up_on, "2026-11-06");
     assert!(values.name.is_empty());
+}
+
+fn prospect(service: &str) -> Prospect {
+    Prospect {
+        name: "Titular Demo".to_owned(),
+        kind: ProspectKind::Person,
+        profile: "PERFIL_1_formalizacion".to_owned(),
+        concessions: 3,
+        hectares: 120.5,
+        departments: "PIURA".to_owned(),
+        provinces: "SULLANA".to_owned(),
+        substances: "M".to_owned(),
+        concession_states: "TITULADA".to_owned(),
+        potential_service: service.to_owned(),
+        needs_review: false,
+        source: "Synthetic".to_owned(),
+    }
+}
+
+fn prospects_view() -> Element {
+    rsx! {
+        Prospects {
+            prospects: vec![prospect("IGAFOM + REINFO")],
+            total: 2021,
+            query: String::new(),
+            on_query: |_| {},
+            on_convert: |_| {},
+        }
+    }
+}
+
+#[test]
+fn lists_prospects_with_their_total_and_a_convert_action() {
+    let html = render(prospects_view);
+
+    assert!(html.contains("Titular Demo"));
+    assert!(html.contains("Mostrando 1 de 2021"));
+    assert!(html.contains("Formalización"));
+    assert!(html.contains(">Convertir en lead<"));
+    assert!(!html.contains("PERFIL_1_formalizacion"));
+}
+
+#[test]
+fn prefills_the_form_from_a_prospect_without_inventing_contact_data() {
+    let values = FormValues::from_prospect(&prospect("IGAFOM + REINFO"), TODAY);
+
+    assert_eq!(values.name, "Titular Demo");
+    assert_eq!(values.service, "IGAFOM + REINFO");
+    assert_eq!(values.follow_up_on, "2026-11-06");
+    assert!(values.phone.is_empty());
+    assert!(values.ruc.is_empty());
+}
+
+#[test]
+fn leaves_the_service_blank_when_it_needs_manual_review() {
+    assert!(
+        FormValues::from_prospect(&prospect("REVISAR_MANUAL"), TODAY)
+            .service
+            .is_empty()
+    );
+}
+
+#[test]
+fn labels_prospect_profiles() {
+    assert_eq!(profile_label("PERFIL_2_cumplimiento"), "Cumplimiento");
+    assert_eq!(profile_label("MIXTO_1_y_2"), "Mixto");
+    assert_eq!(profile_label("OTRO_estado"), "Por revisar");
+    assert_eq!(profile_label("NUEVO"), "NUEVO");
 }

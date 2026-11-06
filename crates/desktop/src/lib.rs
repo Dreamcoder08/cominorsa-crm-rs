@@ -5,18 +5,20 @@ use std::{env, path::PathBuf};
 mod presentation;
 mod views;
 
-use cominorsa_domain::{Lead, LeadRepository, NewLead};
+use cominorsa_domain::{Lead, LeadRepository, NewLead, Prospect, ProspectRepository};
 use cominorsa_storage::SqliteLeads;
 use dioxus::prelude::*;
 use directories::ProjectDirs;
 use time::{Date, OffsetDateTime, format_description::well_known::Iso8601, macros::offset};
 use uuid::Uuid;
 
-pub use presentation::{FollowUp, PipelineSummary, format_date, matches_query};
-pub use views::{LeadForm, Workspace};
+pub use presentation::{FollowUp, PipelineSummary, format_date, matches_query, profile_label};
+pub use views::{LeadForm, Prospects, Section, Shell, Workspace};
 
 const STYLE: &str = include_str!("style.css");
 const DATABASE_PATH_VARIABLE: &str = "COMINORSA_DB_PATH";
+const PROSPECT_PAGE_SIZE: u32 = 100;
+const MANUAL_REVIEW_SERVICE: &str = "REVISAR_MANUAL";
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FormValues {
@@ -34,6 +36,20 @@ impl FormValues {
         Self {
             follow_up_on: follow_up_on.to_string(),
             ..Self::default()
+        }
+    }
+
+    /// Phone and RUC stay blank: prospect sources carry no contact data.
+    pub fn from_prospect(prospect: &Prospect, follow_up_on: Date) -> Self {
+        let service = match prospect.potential_service.as_str() {
+            MANUAL_REVIEW_SERVICE => "",
+            service => service,
+        };
+
+        Self {
+            name: prospect.name.clone(),
+            service: service.to_owned(),
+            ..Self::starting_on(follow_up_on)
         }
     }
 }
@@ -84,6 +100,20 @@ pub fn App() -> Element {
     let mut saving = use_signal(|| false);
     let mut panel_open = use_signal(|| false);
     let mut query = use_signal(String::new);
+    let mut section = use_signal(|| Section::Pipeline);
+    let mut prospect_query = use_signal(String::new);
+
+    let prospects = use_resource(move || async move {
+        let query = prospect_query();
+        let repository = store.read().clone()?;
+        let page = async {
+            let total = repository.count().await?;
+            let found = repository.search(&query, PROSPECT_PAGE_SIZE).await?;
+            Ok::<_, cominorsa_domain::RepositoryError>((total, found))
+        };
+
+        Some(page.await.map_err(|error| error.to_string()))
+    });
 
     use_future(move || async move {
         let loaded = async {
@@ -134,26 +164,56 @@ pub fn App() -> Element {
         if let Some(message) = startup_error() {
             p { class: "banner", role: "alert", "{message}" }
         }
-        Workspace {
-            leads: leads(),
+        Shell {
+            section: section(),
             today: today_in_peru(),
-            query: query(),
-            on_query: move |value| query.set(value),
-            on_new: move |_| {
-                form_error.set(String::new());
-                panel_open.set(true);
-            },
-            on_advance: move |id: Uuid| {
-                if saving() {
-                    return;
+            on_section: move |next| section.set(next),
+            if section() == Section::Pipeline {
+                Workspace {
+                    leads: leads(),
+                    today: today_in_peru(),
+                    query: query(),
+                    on_query: move |value| query.set(value),
+                    on_new: move |_| {
+                        form_error.set(String::new());
+                        panel_open.set(true);
+                    },
+                    on_advance: move |id: Uuid| {
+                        if saving() {
+                            return;
+                        }
+                        let Some(mut lead) = leads.read().iter().find(|lead| lead.id() == id).cloned() else {
+                            return;
+                        };
+                        if lead.advance().is_ok() {
+                            persist(lead, false);
+                        }
+                    },
                 }
-                let Some(mut lead) = leads.read().iter().find(|lead| lead.id() == id).cloned() else {
-                    return;
-                };
-                if lead.advance().is_ok() {
-                    persist(lead, false);
+            } else {
+                match prospects() {
+                    Some(Some(Ok((total, found)))) => rsx! {
+                        Prospects {
+                            prospects: found,
+                            total,
+                            query: prospect_query(),
+                            on_query: move |value| prospect_query.set(value),
+                            on_convert: move |prospect: Prospect| {
+                                form.set(FormValues::from_prospect(&prospect, today_in_peru()));
+                                form_error.set(String::new());
+                                section.set(Section::Pipeline);
+                                panel_open.set(true);
+                            },
+                        }
+                    },
+                    Some(Some(Err(message))) => rsx! {
+                        p { class: "banner", role: "alert", "{message}" }
+                    },
+                    _ => rsx! {
+                        p { class: "loading", "Cargando prospectos…" }
+                    },
                 }
-            },
+            }
         }
         if panel_open() {
             LeadForm {

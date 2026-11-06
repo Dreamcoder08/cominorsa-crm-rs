@@ -91,3 +91,13 @@ pub fn format_date(date: Date) -> String {
         date.year()
     )
 }
+
+pub fn profile_label(profile: &str) -> &str {
+    match profile {
+        "PERFIL_1_formalizacion" => "Formalización",
+        "PERFIL_2_cumplimiento" => "Cumplimiento",
+        "MIXTO_1_y_2" => "Mixto",
+        "OTRO_estado" => "Por revisar",
+        other => other,
+    }
+}

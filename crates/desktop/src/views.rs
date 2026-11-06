@@ -1,13 +1,135 @@
 //! Presentational components. State and persistence live in `App`.
 
-use cominorsa_domain::{Lead, Stage};
+use cominorsa_domain::{Lead, Prospect, Stage};
 use dioxus::prelude::*;
 use time::Date;
 use uuid::Uuid;
 
-use crate::{FollowUp, FormValues, PipelineSummary, format_date, matches_query};
+use crate::{FollowUp, FormValues, PipelineSummary, format_date, matches_query, profile_label};
 
 const SERVICES: [&str; 5] = ["REINFO", "IGAFOM", "DAC", "ESTAMIN", "Plan de minado"];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Section {
+    Pipeline,
+    Prospects,
+}
+
+#[component]
+pub fn Shell(
+    section: Section,
+    today: Date,
+    on_section: EventHandler<Section>,
+    children: Element,
+) -> Element {
+    let nav = |target: Section| {
+        if section == target {
+            "nav-item active"
+        } else {
+            "nav-item"
+        }
+    };
+
+    rsx! {
+        div { class: "shell",
+            aside { class: "sidebar",
+                div { class: "brand",
+                    span { class: "brand-mark", "C" }
+                    span { "COMINORSA" }
+                }
+                nav { aria_label: "Secciones",
+                    button {
+                        class: nav(Section::Pipeline),
+                        onclick: move |_| on_section.call(Section::Pipeline),
+                        "Embudo"
+                    }
+                    button {
+                        class: nav(Section::Prospects),
+                        onclick: move |_| on_section.call(Section::Prospects),
+                        "Prospectos"
+                    }
+                }
+                p { class: "sidebar-date", "{format_date(today)}" }
+            }
+            main { class: "content", {children} }
+        }
+    }
+}
+
+#[component]
+pub fn Prospects(
+    prospects: Vec<Prospect>,
+    total: usize,
+    query: String,
+    on_query: EventHandler<String>,
+    on_convert: EventHandler<Prospect>,
+) -> Element {
+    let shown = prospects.len();
+
+    rsx! {
+        header { class: "topbar",
+            div {
+                h1 { "Prospectos" }
+                p { class: "subtitle", "Titulares de concesiones, sin datos de contacto" }
+            }
+            div { class: "actions",
+                input {
+                    class: "search",
+                    r#type: "search",
+                    aria_label: "Buscar prospectos",
+                    placeholder: "Buscar por titular, zona o servicio",
+                    value: "{query}",
+                    oninput: move |event| on_query.call(event.value()),
+                }
+            }
+        }
+        p { class: "result-count", "Mostrando {shown} de {total}" }
+        if prospects.is_empty() {
+            section { class: "empty",
+                h2 { "Sin prospectos" }
+                p { "No hay titulares que coincidan con la búsqueda." }
+            }
+        } else {
+            div { class: "table-frame",
+                table {
+                    thead {
+                        tr {
+                            th { "Titular" }
+                            th { "Perfil" }
+                            th { class: "numeric", "Concesiones" }
+                            th { class: "numeric", "Hectáreas" }
+                            th { "Departamentos" }
+                            th { "Servicio potencial" }
+                            th { span { class: "visually-hidden", "Acción" } }
+                        }
+                    }
+                    tbody {
+                        for prospect in prospects {
+                            tr { key: "{prospect.kind.code()}-{prospect.name}",
+                                td {
+                                    strong { "{prospect.name}" }
+                                    span { class: "kind", "{prospect.kind.label()}" }
+                                }
+                                td { "{profile_label(&prospect.profile)}" }
+                                td { class: "numeric", "{prospect.concessions}" }
+                                td { class: "numeric", "{prospect.hectares:.0}" }
+                                td { "{prospect.departments}" }
+                                td { "{prospect.potential_service}" }
+                                td {
+                                    button {
+                                        class: "secondary",
+                                        onclick: move |_| on_convert.call(prospect.clone()),
+                                        "Convertir en lead"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 #[component]
 pub fn Workspace(
@@ -27,18 +149,6 @@ pub fn Workspace(
     let has_no_results = !is_empty && visible.is_empty();
 
     rsx! {
-        div { class: "shell",
-            aside { class: "sidebar",
-                div { class: "brand",
-                    span { class: "brand-mark", "C" }
-                    span { "COMINORSA" }
-                }
-                nav { aria_label: "Secciones",
-                    span { class: "nav-item active", aria_current: "page", "Embudo" }
-                }
-                p { class: "sidebar-date", "{format_date(today)}" }
-            }
-            main { class: "content",
                 header { class: "topbar",
                     div {
                         h1 { "Embudo comercial" }
@@ -80,8 +190,6 @@ pub fn Workspace(
                 } else {
                     Board { leads: visible, today, on_advance }
                 }
-            }
-        }
     }
 }
 
