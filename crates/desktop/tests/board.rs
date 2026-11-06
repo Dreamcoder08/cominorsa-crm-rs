@@ -1,4 +1,4 @@
-use cominorsa_desktop::{Board, FormValues, parse_form};
+use cominorsa_desktop::{Board, FormValues, LeadForm, parse_form};
 use cominorsa_domain::{Lead, NewLead};
 use dioxus::prelude::*;
 use time::macros::date;
@@ -100,4 +100,25 @@ fn starts_the_form_with_a_real_follow_up_date() {
 
     assert_eq!(values.follow_up_on, "2026-11-06");
     assert!(values.name.is_empty());
+}
+
+fn saving_form() -> Element {
+    rsx! {
+        LeadForm {
+            values: FormValues::default(),
+            saving: true,
+            on_change: |_| {},
+            on_submit: |_| {},
+        }
+    }
+}
+
+#[test]
+fn blocks_a_second_submit_while_saving() {
+    let mut dom = VirtualDom::new(saving_form);
+    dom.rebuild_in_place();
+    let html = dioxus_ssr::render(&dom);
+
+    assert!(html.contains("disabled"));
+    assert!(html.contains("Guardando"));
 }

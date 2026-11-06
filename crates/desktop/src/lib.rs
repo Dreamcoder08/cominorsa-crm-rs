@@ -74,6 +74,7 @@ pub fn App() -> Element {
     let mut leads = use_signal(Vec::<Lead>::new);
     let mut error = use_signal(|| None::<String>);
     let mut form = use_signal(|| FormValues::starting_on(today_in_peru()));
+    let mut saving = use_signal(|| false);
 
     use_future(move || async move {
         let loaded = async {
@@ -97,6 +98,7 @@ pub fn App() -> Element {
             return;
         };
 
+        saving.set(true);
         spawn(async move {
             let saved = async {
                 repository.save(&lead).await?;
@@ -113,6 +115,7 @@ pub fn App() -> Element {
                 }
                 Err(failure) => error.set(Some(failure.to_string())),
             }
+            saving.set(false);
         });
     };
 
@@ -125,16 +128,25 @@ pub fn App() -> Element {
             }
             LeadForm {
                 values: form(),
+                saving: saving(),
                 on_change: move |values| form.set(values),
-                on_submit: move |_| match parse_form(form()) {
-                    Ok(lead) => persist(lead, true),
-                    Err(message) => error.set(Some(message)),
+                on_submit: move |_| {
+                    if saving() {
+                        return;
+                    }
+                    match parse_form(form()) {
+                        Ok(lead) => persist(lead, true),
+                        Err(message) => error.set(Some(message)),
+                    }
                 },
             }
             Board {
                 leads: leads(),
                 today: today_in_peru(),
                 on_advance: move |id: Uuid| {
+                    if saving() {
+                        return;
+                    }
                     let Some(mut lead) = leads.read().iter().find(|lead| lead.id() == id).cloned() else {
                         return;
                     };
@@ -149,8 +161,9 @@ pub fn App() -> Element {
 }
 
 #[component]
-fn LeadForm(
+pub fn LeadForm(
     values: FormValues,
+    saving: bool,
     on_change: EventHandler<FormValues>,
     on_submit: EventHandler<()>,
 ) -> Element {
@@ -188,7 +201,11 @@ fn LeadForm(
                     oninput: edit(|v, text| v.follow_up_on = text),
                 }
             }
-            button { r#type: "submit", "Registrar lead" }
+            button {
+                r#type: "submit",
+                disabled: saving,
+                if saving { "Guardando…" } else { "Registrar lead" }
+            }
         }
     }
 }

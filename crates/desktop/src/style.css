@@ -63,6 +63,8 @@ button {
   cursor: pointer;
 }
 
+button:disabled { opacity: 0.6; cursor: default; }
+
 .summary { margin-bottom: 12px; font-size: 14px; font-weight: 600; color: var(--text); }
 .error { color: var(--due); font-weight: 600; }
 .board { display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 12px; }
