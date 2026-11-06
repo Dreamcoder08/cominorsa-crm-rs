@@ -33,3 +33,5 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - Next: confirm the fix in the window, validate S5 and S7 with the client, then add backups.
 - L7 (2026-11-06): Native review of 0d167ad..bd93a86 was granted, approved and acknowledged (lineage `review-dcf381afd374b049`). The full branch exceeded the review context budget because of the initial `Cargo.lock`, so domain commit 0d167ad was not reviewed. Advisory findings for later work: `R3-duplicate-submit`, `R3-stale-today`, `R3-startup-error-masked`, `R3-app-flow-unproved`.
 - L8 (2026-11-06, user answer, verbatim): "lo va a usar el dueño que es mi prima y su novio que tambien es su socio". Two users are confirmed; whether they share one device is unanswered.
+- L9 (2026-11-06, user answer, verbatim): "si por el momento los 2 usan la misma laptop". No network mode or login is needed for now.
+- L10 (2026-11-06): Fixed `R3-duplicate-submit` in 9aed357. 18 tests pass and clippy is clean; the fix was not exercised in the live window.
