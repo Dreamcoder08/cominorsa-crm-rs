@@ -15,7 +15,7 @@ use std::{
 use cominorsa_domain::{
     Prospect, ProspectKind, ProspectRepository, RepositoryError, Ruc, TaxRecord,
 };
-use cominorsa_storage::SqliteLeads;
+use cominorsa_storage::{AsideFiles, SqliteLeads};
 use csv::{ReaderBuilder, StringRecord};
 use thiserror::Error;
 
@@ -66,6 +66,8 @@ pub enum ImportError {
         "La base está en la versión {found}, más nueva que la {required} que admite este programa. Actualiza el programa"
     )]
     SchemaNewer { found: i64, required: i64 },
+    #[error("{0}")]
+    DatabaseAside(AsideFiles),
     #[error(transparent)]
     Storage(#[from] RepositoryError),
 }
@@ -76,7 +78,10 @@ impl ImportError {
     pub fn is_database_refusal(&self) -> bool {
         matches!(
             self,
-            Self::DatabaseMissing(_) | Self::SchemaOutdated { .. } | Self::SchemaNewer { .. }
+            Self::DatabaseMissing(_)
+                | Self::DatabaseAside(_)
+                | Self::SchemaOutdated { .. }
+                | Self::SchemaNewer { .. }
         )
     }
 }
@@ -152,6 +157,9 @@ pub fn parse_tax_records(source: impl Read) -> Result<Vec<(String, TaxRecord)>, 
 /// not depend on the application crate, so the wording is repeated here, and
 /// `scripts/e2e-cli.sh` proves both messages match.
 async fn open_for_import(database: &Path) -> Result<SqliteLeads, ImportError> {
+    if let Some(found) = AsideFiles::find(database) {
+        return Err(ImportError::DatabaseAside(found));
+    }
     if !database.exists() {
         return Err(ImportError::DatabaseMissing(database.to_path_buf()));
     }

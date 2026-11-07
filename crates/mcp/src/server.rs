@@ -104,6 +104,10 @@ fn storage_message(code: &str) -> &'static str {
         }
         "schema_newer" => "La base es más nueva que este programa. Actualiza el programa",
         "corrupt_record" => "Un registro guardado está dañado",
+        "database_aside" => {
+            "Una actualización interrumpida dejó la base apartada; recupérala con cominorsa status"
+        }
+        "database_busy" => "Otro programa tiene abierta la base",
         _ => "No se pudo leer o guardar la base de datos",
     }
 }

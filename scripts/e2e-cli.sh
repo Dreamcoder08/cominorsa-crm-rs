@@ -696,6 +696,15 @@ expect "the copy holds the old schema" 7 "$(sqlite3 "$blocked_copy" 'SELECT MAX(
 [[ "$(jq -r '.error.message' blocked.err)" == *"$blocked_copy"* ]] ||
     fail "the error must name the copy: $(cat blocked.err)"
 [[ -z "$(compgen -G 'blocked.migrando-*')" ]] || fail "a failed migration left its working copy"
+first_copy_hash="$(file_hash "$blocked_copy")"
+status=0
+"$binary" --db blocked.db --json --today "$day" migrate >blocked.out 2>blocked.err || status=$?
+expect "exit of a retried migration in the same second" 3 "$status"
+expect "code of a retried migration" migration_failed "$(jq -r '.error.code' blocked.err)"
+expect "a retry makes its own copy" 2 "$(compgen -G 'blocked.antes-de-migrar-*.db' | wc -l)"
+expect "a retry never touches the earlier copy" "$first_copy_hash" "$(file_hash "$blocked_copy")"
+[[ "$(jq -r '.error.message' blocked.err)" != *"$blocked_copy"* ]] ||
+    fail "a retry must not call an existing file its copy: $(cat blocked.err)"
 
 echo "== migrate refuses while another program has the database open"
 cp old.db busy.db
@@ -742,6 +751,35 @@ expect "every lead is listed" "$stored_leads" "$(jq '.data.leads | length' <<<"$
 expect "export counts the unreadable consent" 1 \
     "$("$binary" --db corrupt.db --json export | jq '.data.unreadable_rows.lead_consents')"
 [[ "$corrupt_status$corrupt_list" != *fecha-rota* ]] || fail "an unreadable value was echoed"
+kept_lead="$("$binary" --db corrupt.db --json lead add --name "Consentimiento ilegible" --phone 987650011 \
+    --service DAC | jq -r '.data.lead.id')"
+sqlite3 corrupt.db "UPDATE leads SET consent_given = 1, consent_on = '2026-02-30',
+    consent_source = 'Firmó formulario F-12' WHERE id = '$kept_lead';" >/dev/null
+consent_columns="SELECT quote(consent_given) || '|' || quote(consent_on) || '|' || quote(consent_source)
+    FROM leads WHERE id = '$kept_lead'"
+kept_consent="$(sqlite3 corrupt.db "$consent_columns")"
+"$binary" --db corrupt.db --json lead advance "$kept_lead" >/dev/null
+expect "a write keeps an unreadable consent byte for byte" "$kept_consent" "$(sqlite3 corrupt.db "$consent_columns")"
+expect "the row stays counted as unreadable" 2 \
+    "$("$binary" --db corrupt.db --json status | jq '.data.unreadable_rows.lead_consents')"
+
+echo "== a database left aside is never replaced"
+mkdir gap
+cp imported.db gap/crm.aparte-77-0.db
+cp imported.db gap/crm.antes-de-migrar-20260302-120000-77-0.db
+gap_files="$(ls gap)"
+for command in init status migrate "lead list"; do
+    status=0
+    # shellcheck disable=SC2086
+    "$binary" --db gap/crm.db --json $command >gap.out 2>gap.err || status=$?
+    expect "exit of '$command' with the database aside" 3 "$status"
+    expect "code of '$command' with the database aside" database_aside "$(jq -r '.error.code' gap.err)"
+    [[ "$(jq -r '.error.message' gap.err)" == *crm.aparte-77-0.db*crm.antes-de-migrar-20260302-120000-77-0.db* ]] ||
+        fail "the refusal must name the aside and the copy: $(cat gap.err)"
+    expect "files after '$command' with the database aside" "$gap_files" "$(ls gap)"
+done
+importer_refused gap/crm.db import-companies.csv import-people.csv
+expect "files after the importer with the database aside" "$gap_files" "$(ls gap)"
 
 echo "== only migrate upgrades"
 echo "archivo del usuario" >old.migrating.db

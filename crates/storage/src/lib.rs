@@ -1,9 +1,9 @@
 //! SQLite adapter for the domain repository port.
 
 use std::{
-    collections::{HashMap, hash_map::DefaultHasher},
+    collections::HashMap,
+    fmt,
     fs::{self, File, OpenOptions},
-    hash::{Hash, Hasher},
     io::{self, ErrorKind},
     path::{Path, PathBuf},
     process,
@@ -27,6 +27,10 @@ use sqlx::{
 use time::{Date, format_description::well_known::Iso8601};
 use uuid::Uuid;
 
+/// Saves a lead. A lead without consent writes no consent columns: no rule
+/// clears a consent, so a lead loaded without one either has none stored or
+/// has one that cannot be read, which stays byte-for-byte until someone
+/// records or revokes consent, and keeps being counted as unreadable.
 const UPSERT: &str = "INSERT INTO leads (id, name, phone, ruc, service, stage, follow_up_on, owner,
         renewal_of_case, origin, consent_given, consent_on, consent_source)
     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
@@ -40,9 +44,9 @@ const UPSERT: &str = "INSERT INTO leads (id, name, phone, ruc, service, stage, f
         owner = excluded.owner,
         renewal_of_case = excluded.renewal_of_case,
         origin = excluded.origin,
-        consent_given = excluded.consent_given,
-        consent_on = excluded.consent_on,
-        consent_source = excluded.consent_source";
+        consent_given = COALESCE(excluded.consent_given, leads.consent_given),
+        consent_on = COALESCE(excluded.consent_on, leads.consent_on),
+        consent_source = COALESCE(excluded.consent_source, leads.consent_source)";
 
 const SELECT_CONSENTS: &str = "SELECT consent_given, consent_on, consent_source FROM leads";
 
@@ -193,17 +197,43 @@ const SQLITE_BUSY: i32 = 5;
 /// How many unique working names `upgrade` tries before it gives up.
 const WORKING_NAME_ATTEMPTS: u32 = 100;
 
+/// Name labels of the files an upgrade puts beside the database.
+const SAFETY_LABEL: &str = "antes-de-migrar";
+const WORKING_LABEL: &str = "migrando";
+const ASIDE_LABEL: &str = "aparte";
+const RESTORE_LABEL: &str = "restaurando";
+
 /// Why `upgrade` left the database as it was.
 #[derive(Debug)]
 pub enum UpgradeError {
-    /// Another connection has the database open or is using it.
+    /// Another connection has the database open or is using it; nothing was
+    /// written.
     Busy,
-    Failed(RepositoryError),
+    /// The upgrade failed. `safety_copy` is the copy it made, if it made one.
+    Failed {
+        error: RepositoryError,
+        safety_copy: Option<PathBuf>,
+    },
+}
+
+impl UpgradeError {
+    fn with_copy(self, copy: &Path) -> Self {
+        match self {
+            Self::Failed { error, .. } => Self::Failed {
+                error,
+                safety_copy: Some(copy.to_path_buf()),
+            },
+            busy => busy,
+        }
+    }
 }
 
 impl From<RepositoryError> for UpgradeError {
     fn from(error: RepositoryError) -> Self {
-        Self::Failed(error)
+        Self::Failed {
+            error,
+            safety_copy: None,
+        }
     }
 }
 
@@ -217,8 +247,89 @@ impl From<sqlx::Error> for UpgradeError {
         if busy {
             Self::Busy
         } else {
-            Self::Failed(failure(error))
+            failure(error).into()
         }
+    }
+}
+
+/// What an interrupted upgrade on Windows leaves when the database path is
+/// missing: the database moved aside and the safety copies beside it. While
+/// these exist, no database is created at that path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AsideFiles {
+    pub database: PathBuf,
+    pub asides: Vec<PathBuf>,
+    pub safety_copies: Vec<PathBuf>,
+}
+
+impl AsideFiles {
+    /// `None` unless `database` is missing and a file moved aside exists.
+    pub fn find(database: &Path) -> Option<Self> {
+        if database.exists() {
+            return None;
+        }
+        let folder = match database.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => Path::new("."),
+        };
+        let prefix = |label: &str| {
+            database
+                .with_extension(format!("{label}-"))
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        };
+        let (aside, copy) = (prefix(ASIDE_LABEL)?, prefix(SAFETY_LABEL)?);
+        let mut asides = Vec::new();
+        let mut safety_copies = Vec::new();
+        for entry in fs::read_dir(folder).ok()?.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.ends_with(".db") {
+                continue;
+            }
+            if name.starts_with(&aside) {
+                asides.push(entry.path());
+            } else if name.starts_with(&copy) {
+                safety_copies.push(entry.path());
+            }
+        }
+        asides.sort();
+        safety_copies.sort();
+
+        (!asides.is_empty()).then(|| Self {
+            database: database.to_path_buf(),
+            asides,
+            safety_copies,
+        })
+    }
+}
+
+impl fmt::Display for AsideFiles {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let list = |paths: &[PathBuf]| {
+            paths
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        write!(
+            formatter,
+            "No existe {}: una actualización interrumpida dejó la base en {}",
+            self.database.display(),
+            list(&self.asides)
+        )?;
+        if !self.safety_copies.is_empty() {
+            write!(
+                formatter,
+                ", y su copia de seguridad está en {}",
+                list(&self.safety_copies)
+            )?;
+        }
+        write!(
+            formatter,
+            ". Renombra el archivo apartado a {} para recuperarla; no se creó otra base",
+            self.database.display()
+        )
     }
 }
 
@@ -238,6 +349,9 @@ impl SqliteLeads {
     /// Opens the database file, creating it and applying pending migrations.
     /// It sets WAL mode, so only `init` and `migrate` reach it.
     pub async fn open(path: &Path) -> Result<Self, RepositoryError> {
+        if let Some(aside) = AsideFiles::find(path) {
+            return Err(failure(aside));
+        }
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(failure)?;
         }
@@ -289,52 +403,21 @@ impl SqliteLeads {
         Ok(Self { pool })
     }
 
-    /// Copies `database` to `safety_copy`, migrates a working copy of it, and
-    /// only then puts that copy in place of `database`, so a failed migration
-    /// leaves `database` as it was.
+    /// Copies `database` beside itself, migrates a working copy of that, and
+    /// only then puts the working copy in place of `database`, so a failed
+    /// migration leaves `database` as it was. Returns the safety copy, named
+    /// `<stem>.antes-de-migrar-<stamp>-<process>-<n>.db`, a new file that
+    /// never replaces one already there.
     ///
-    /// The whole upgrade holds an exclusive lock on `database`. When another
-    /// connection has it open or in use, nothing is written and the answer is
-    /// [`UpgradeError::Busy`]. See `swap_locked` for what keeps a connection
-    /// that waits on the lock from writing to the replaced file.
-    pub async fn upgrade(database: &Path, safety_copy: &Path) -> Result<(), UpgradeError> {
-        let mut lock = lock_exclusively(database).await?;
-        let copied = async {
-            sqlx::query("VACUUM INTO ?1")
-                .bind(safety_copy.to_string_lossy().into_owned())
-                .execute(&mut lock)
-                .await?;
-            Ok::<_, UpgradeError>(working_copy(database, safety_copy, "migrando")?)
-        }
-        .await;
-        let working = match copied {
-            Ok(working) => working,
-            Err(error) => {
-                let _ = lock.close().await;
-                return Err(error);
-            }
-        };
-
-        let migrated = async {
-            Self::open(&working).await?.close().await;
-            Ok::<_, RepositoryError>(())
-        }
-        .await;
-        if let Err(error) = migrated {
-            let _ = lock.close().await;
-            remove_with_sidecars(&working);
-            return Err(error.into());
-        }
-
-        let swapped = if cfg!(windows) {
-            swap_after_release(lock, &working, database, |_| {}).await
+    /// Before anything changes, the upgrade makes sure no other connection
+    /// has the database; otherwise it answers [`UpgradeError::Busy`] and the
+    /// file stays byte-identical.
+    pub async fn upgrade(database: &Path, stamp: &str) -> Result<PathBuf, UpgradeError> {
+        if cfg!(windows) {
+            upgrade_aside(database, stamp, |_| {}).await
         } else {
-            swap_locked(lock, &working, database).await
-        };
-        if swapped.is_err() {
-            remove_with_sidecars(&working);
+            upgrade_locked(database, stamp).await
         }
-        swapped
     }
 
     /// The schema version this build of the adapter works with.
@@ -404,7 +487,7 @@ impl SqliteLeads {
         backup: &Path,
         safety: &Path,
     ) -> Result<Self, RepositoryError> {
-        let working = working_copy(database, backup, "restaurando")?;
+        let working = working_copy(database, backup, RESTORE_LABEL)?;
 
         if let Err(error) = validate_backup(&working).await {
             remove_with_sidecars(&working);
@@ -571,77 +654,181 @@ fn working_copy(database: &Path, source: &Path, label: &str) -> Result<PathBuf, 
     }
 }
 
-/// Puts `working` in place of `database` while `lock` still holds the old
-/// file, then releases it. Nothing can write to `database` in between.
+/// Takes the safety copy through `lock` and migrates a working copy of it,
+/// both beside `database`. Returns the safety copy and the migrated copy.
+async fn copy_and_migrate(
+    lock: &mut SqliteConnection,
+    database: &Path,
+    stamp: &str,
+) -> Result<(PathBuf, PathBuf), UpgradeError> {
+    let (safety, placeholder) = new_file_beside(database, &format!("{SAFETY_LABEL}-{stamp}"))?;
+    drop(placeholder);
+    // `VACUUM INTO` accepts an empty file, so the reserved name is kept.
+    let copied = sqlx::query("VACUUM INTO ?1")
+        .bind(safety.to_string_lossy().into_owned())
+        .execute(&mut *lock)
+        .await;
+    if let Err(error) = copied {
+        let _ = fs::remove_file(&safety);
+        return Err(error.into());
+    }
+
+    let migrated = async {
+        let working = working_copy(database, &safety, WORKING_LABEL)?;
+        let opened = async {
+            SqliteLeads::open(&working).await?.close().await;
+            Ok::<_, RepositoryError>(())
+        }
+        .await;
+        match opened {
+            Ok(()) => Ok(working),
+            Err(error) => {
+                remove_with_sidecars(&working);
+                Err(error)
+            }
+        }
+    }
+    .await;
+
+    match migrated {
+        Ok(working) => Ok((safety, working)),
+        Err(error) => Err(UpgradeError::from(error).with_copy(&safety)),
+    }
+}
+
+/// The upgrade where a file can be renamed while open (Linux, macOS): the
+/// exclusive lock is taken first, so a busy database changes in nothing, and
+/// `working` replaces `database` while the lock still holds the old file.
+/// Nothing can write to `database` in between.
 ///
 /// A connection that opened the old file and waits on the lock keeps that
 /// file after the rename. The old file leaves WAL mode first, so that
 /// connection would write through a rollback journal, which SQLite refuses on
 /// a moved file (`SQLITE_READONLY_DBMOVED`); in WAL mode it would instead
 /// append to the new file's WAL and corrupt it. Reads still see the old data.
-async fn swap_locked(
-    mut lock: SqliteConnection,
-    working: &Path,
-    database: &Path,
-) -> Result<(), UpgradeError> {
-    let prepared = leave_wal(&mut lock).await;
-    let swapped = match prepared {
-        Ok(()) => fs::rename(working, database).map_err(|error| failure(error).into()),
-        Err(error) => Err(error),
-    };
+async fn upgrade_locked(database: &Path, stamp: &str) -> Result<PathBuf, UpgradeError> {
+    let mut lock = lock_exclusively(database).await?;
+    let upgraded = async {
+        let (safety, working) = copy_and_migrate(&mut lock, database, stamp).await?;
+        let swapped = async {
+            leave_wal(&mut lock).await?;
+            fs::rename(&working, database).map_err(|error| UpgradeError::from(failure(error)))
+        }
+        .await;
+        match swapped {
+            Ok(()) => Ok(safety),
+            Err(error) => {
+                remove_with_sidecars(&working);
+                Err(error.with_copy(&safety))
+            }
+        }
+    }
+    .await;
     let _ = lock.close().await;
-    swapped
+
+    upgraded
 }
 
-/// Windows cannot rename over a file that a connection has open, so `lock`
-/// must close before the swap. To lose no write made in that gap, the old
-/// file first moves aside, which fails while anyone has it open, and its
-/// bytes must still be the ones seen under the lock. Otherwise it goes back
-/// and the answer is [`UpgradeError::Busy`]. While it is aside, `database`
-/// does not exist for the time of one rename. `between` runs in the gap, so a
-/// test can write there.
-async fn swap_after_release(
-    mut lock: SqliteConnection,
-    working: &Path,
+/// The upgrade where an open file cannot be renamed (Windows). Moving the
+/// database aside is the first change and fails while anyone has it open, so
+/// a busy database changes in nothing. The upgrade then works on the moved
+/// file, which no one else can reach, and puts the migrated copy at the
+/// database path. Meanwhile that path is missing, and [`AsideFiles`] keeps
+/// every open from creating a new database there. On failure the file goes
+/// back. `between` runs right after the move, so a test can act in the gap.
+async fn upgrade_aside(
     database: &Path,
+    stamp: &str,
     between: impl FnOnce(&Path),
-) -> Result<(), UpgradeError> {
-    let seen = match leave_wal(&mut lock).await {
-        Ok(()) => file_digest(database),
-        Err(error) => {
-            let _ = lock.close().await;
-            return Err(error);
-        }
-    };
-    let _ = lock.close().await;
-    let seen = seen?;
+) -> Result<PathBuf, UpgradeError> {
+    let aside = move_aside(database)?;
     between(database);
 
-    // The empty placeholder only reserves the name; the rename replaces it.
-    let (aside, placeholder) = new_file_beside(database, "aparte")?;
+    let upgraded = async {
+        let mut lock = lock_exclusively(&aside).await?;
+        let prepared = copy_and_migrate(&mut lock, database, stamp).await;
+        let _ = lock.close().await;
+        let (safety, working) = prepared?;
+        let placed = if database.exists() {
+            Err(failure(format!("Ya existe {}", database.display())))
+        } else {
+            fs::rename(&working, database).map_err(failure)
+        };
+        match placed {
+            Ok(()) => Ok(safety),
+            Err(error) => {
+                remove_with_sidecars(&working);
+                Err(UpgradeError::from(error).with_copy(&safety))
+            }
+        }
+    }
+    .await;
+
+    match upgraded {
+        Ok(safety) => {
+            remove_with_sidecars(&aside);
+            Ok(safety)
+        }
+        Err(error) => match put_back(&aside, database) {
+            Ok(()) => Err(error),
+            Err(stuck) => Err(match error {
+                UpgradeError::Failed {
+                    safety_copy: Some(copy),
+                    ..
+                } => stuck.with_copy(&copy),
+                _ => stuck,
+            }),
+        },
+    }
+}
+
+/// The journals SQLite may still need beside a closed database; `-shm` is
+/// rebuilt and stays.
+fn journals(path: &Path) -> [PathBuf; 2] {
+    let [wal, _, journal] = sidecars(path);
+    [wal, journal]
+}
+
+/// Moves `database` and its journals to a new name beside it. Any failure
+/// means someone has them open: what moved goes back.
+fn move_aside(database: &Path) -> Result<PathBuf, UpgradeError> {
+    let (aside, placeholder) = new_file_beside(database, ASIDE_LABEL)?;
     drop(placeholder);
     if fs::rename(database, &aside).is_err() {
         let _ = fs::remove_file(&aside);
         return Err(UpgradeError::Busy);
     }
-    if file_digest(&aside)? != seen {
-        fs::rename(&aside, database).map_err(|error| aside_failure(error, &aside))?;
-        return Err(UpgradeError::Busy);
+    for (from, to) in journals(database).iter().zip(journals(&aside)) {
+        if from.exists() && fs::rename(from, &to).is_err() {
+            return Err(match put_back(&aside, database) {
+                Ok(()) => UpgradeError::Busy,
+                Err(stuck) => stuck,
+            });
+        }
     }
-    if let Err(error) = fs::rename(working, database) {
-        fs::rename(&aside, database).map_err(|error| aside_failure(error, &aside))?;
-        return Err(failure(error).into());
-    }
-    let _ = fs::remove_file(&aside);
 
-    Ok(())
+    Ok(aside)
 }
 
-fn aside_failure(error: io::Error, aside: &Path) -> UpgradeError {
-    UpgradeError::Failed(failure(format!(
-        "{error}. Los datos anteriores están en {}",
-        aside.display()
-    )))
+/// Returns a file moved aside, with its journals, to the database path,
+/// unless something already took that path.
+fn put_back(aside: &Path, database: &Path) -> Result<(), UpgradeError> {
+    let stuck = |reason: String| {
+        UpgradeError::from(failure(format!(
+            "{reason}. Los datos anteriores están en {}",
+            aside.display()
+        )))
+    };
+    if database.exists() {
+        return Err(stuck(format!("Ya existe {}", database.display())));
+    }
+    for (from, to) in journals(aside).iter().zip(journals(database)) {
+        if from.exists() {
+            fs::rename(from, &to).map_err(|error| stuck(error.to_string()))?;
+        }
+    }
+
+    fs::rename(aside, database).map_err(|error| stuck(error.to_string()))
 }
 
 /// Moves the locked database out of WAL mode, which first writes its WAL into
@@ -655,14 +842,6 @@ async fn leave_wal(lock: &mut SqliteConnection) -> Result<(), UpgradeError> {
     }
 
     Ok(())
-}
-
-fn file_digest(path: &Path) -> Result<u64, UpgradeError> {
-    let bytes = fs::read(path).map_err(failure)?;
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-
-    Ok(hasher.finish())
 }
 
 async fn validate_backup(working: &Path) -> Result<(), RepositoryError> {
@@ -697,9 +876,12 @@ fn remove_sidecars(path: &Path) {
     }
 }
 
+/// Removes one of this adapter's own working files and every journal of it.
 fn remove_with_sidecars(path: &Path) {
     let _ = fs::remove_file(path);
-    remove_sidecars(path);
+    for sidecar in sidecars(path) {
+        let _ = fs::remove_file(sidecar);
+    }
 }
 
 async fn upsert_lead<'e>(
@@ -1494,9 +1676,9 @@ fn failure(error: impl ToString) -> RepositoryError {
 
 #[cfg(test)]
 mod tests {
-    //! The swap Windows needs, run here so every platform proves it.
+    //! The upgrade Windows needs, run here so every platform proves it.
 
-    use std::{env, process::Command};
+    use std::{borrow::Cow, env, process::Command};
 
     use super::*;
 
@@ -1504,7 +1686,7 @@ mod tests {
 
     impl Folder {
         fn new() -> Self {
-            let path = env::temp_dir().join(format!("cominorsa-swap-{}", Uuid::now_v7()));
+            let path = env::temp_dir().join(format!("cominorsa-aside-{}", Uuid::now_v7()));
             fs::create_dir_all(&path).unwrap();
             Self(path)
         }
@@ -1535,45 +1717,138 @@ mod tests {
         String::from_utf8(output.stdout).unwrap().trim().to_owned()
     }
 
-    async fn databases(folder: &Folder) -> (PathBuf, PathBuf) {
+    /// A WAL database at schema 8 with one synthetic lead.
+    async fn eighth_schema(folder: &Folder) -> PathBuf {
         let database = folder.0.join("crm.db");
-        let working = folder.0.join("crm.nueva.db");
-        for (path, table) in [(&database, "vieja"), (&working, "nueva")] {
-            SqliteLeads::open(path).await.unwrap().close().await;
-            sqlite(path, &format!("CREATE TABLE {table} (x);"));
-        }
-        (database, working)
+        let options = SqliteConnectOptions::new()
+            .filename(&database)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal);
+        let pool = SqlitePool::connect_with(options).await.unwrap();
+        let mut eighth = sqlx::migrate!("./migrations");
+        eighth.migrations = Cow::Owned(
+            eighth
+                .migrations
+                .iter()
+                .filter(|migration| migration.version <= 8)
+                .cloned()
+                .collect(),
+        );
+        eighth.run(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO leads (id, name, phone, service, stage, follow_up_on)
+            VALUES ('00000000-0000-7000-8000-000000000001', 'Minera', '987654321', 'DAC',
+            'initial_contact', '2026-11-01')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+        database
     }
 
     #[tokio::test]
-    async fn the_swap_after_release_puts_the_new_file_in_place() {
+    async fn the_upgrade_aside_migrates_and_leaves_only_the_copy() {
         let folder = Folder::new();
-        let (database, working) = databases(&folder).await;
-        let lock = lock_exclusively(&database).await.unwrap();
+        let database = eighth_schema(&folder).await;
 
-        swap_after_release(lock, &working, &database, |_| {})
+        let copy = upgrade_aside(&database, "20270115-030000", |_| {})
             .await
             .unwrap();
 
-        assert!(sqlite(&database, ".tables").contains("nueva"));
-        assert!(!sqlite(&database, ".tables").contains("vieja"));
-        assert_eq!(folder.names(), ["crm.db"]);
+        assert_eq!(sqlite(&database, SELECT_SCHEMA_VERSION), "9");
+        assert_eq!(sqlite(&copy, SELECT_SCHEMA_VERSION), "8");
+        assert_eq!(sqlite(&database, "SELECT name FROM leads"), "Minera");
+        let copy = copy.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(copy.starts_with("crm.antes-de-migrar-20270115-030000-"));
+        let mut expected = vec!["crm.db".to_owned(), copy];
+        expected.sort();
+        assert_eq!(folder.names(), expected);
     }
 
     #[tokio::test]
-    async fn a_write_in_the_gap_puts_the_old_file_back_and_is_busy() {
+    async fn in_the_gap_no_open_creates_a_database_and_the_aside_is_named() {
         let folder = Folder::new();
-        let (database, working) = databases(&folder).await;
-        let lock = lock_exclusively(&database).await.unwrap();
+        let database = eighth_schema(&folder).await;
+        let mut seen = None;
 
-        let swapped = swap_after_release(lock, &working, &database, |path| {
-            sqlite(path, "CREATE TABLE escrita_en_el_hueco (x);");
+        upgrade_aside(&database, "20270115-030000", |path| {
+            let found = AsideFiles::find(path).expect("the database is aside");
+            // `open` is async; it runs on its own thread and runtime here.
+            let opened = std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        tokio::runtime::Builder::new_current_thread()
+                            .build()
+                            .unwrap()
+                            .block_on(SqliteLeads::open(path))
+                            .map(|_| ())
+                    })
+                    .join()
+                    .unwrap()
+            });
+            seen = Some((found, opened, path.exists()));
         })
-        .await;
+        .await
+        .unwrap();
 
-        assert!(matches!(swapped, Err(UpgradeError::Busy)), "{swapped:?}");
-        let tables = sqlite(&database, ".tables");
-        assert!(tables.contains("vieja") && tables.contains("escrita_en_el_hueco"));
-        assert_eq!(folder.names(), ["crm.db", "crm.nueva.db"]);
+        let (found, opened, existed) = seen.unwrap();
+        assert_eq!(found.asides.len(), 1);
+        assert!(
+            found.asides[0]
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("crm.aparte-")
+        );
+        let refusal = opened.expect_err("no database is created in the gap").0;
+        assert!(
+            refusal.contains(&found.asides[0].display().to_string()),
+            "{refusal}"
+        );
+        assert!(!existed);
+    }
+
+    #[tokio::test]
+    async fn a_busy_database_changes_in_nothing_on_the_aside_path() {
+        let folder = Folder::new();
+        let database = eighth_schema(&folder).await;
+        let other = SqlitePool::connect_with(SqliteConnectOptions::new().filename(&database))
+            .await
+            .unwrap();
+        sqlx::query("SELECT COUNT(*) FROM leads")
+            .fetch_one(&other)
+            .await
+            .unwrap();
+        let bytes = fs::read(&database).unwrap();
+        let names = folder.names();
+
+        let refused = upgrade_aside(&database, "20270115-030000", |_| {}).await;
+
+        assert!(matches!(refused, Err(UpgradeError::Busy)), "{refused:?}");
+        assert!(fs::read(&database).unwrap() == bytes);
+        assert_eq!(folder.names(), names);
+        other.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_failed_migration_puts_the_file_back_on_the_aside_path() {
+        let folder = Folder::new();
+        let database = eighth_schema(&folder).await;
+        sqlite(&database, "ALTER TABLE leads ADD COLUMN origin TEXT;");
+        let bytes = fs::read(&database).unwrap();
+
+        let failed = upgrade_aside(&database, "20270115-030000", |_| {}).await;
+
+        let Err(UpgradeError::Failed {
+            safety_copy: Some(copy),
+            ..
+        }) = failed
+        else {
+            panic!("{failed:?}");
+        };
+        assert!(fs::read(&database).unwrap() == bytes);
+        assert_eq!(sqlite(&copy, SELECT_SCHEMA_VERSION), "8");
+        assert_eq!(folder.names().len(), 2, "{:?}", folder.names());
     }
 }

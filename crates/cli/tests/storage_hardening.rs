@@ -406,3 +406,159 @@ fn restore_never_touches_a_file_with_the_old_working_name() {
         scratch.names()
     );
 }
+
+const UNREADABLE_CONSENT: &str = "consent_given = 1, consent_on = '2026-02-30',
+    consent_source = 'Firmó formulario F-12'";
+
+/// The stored consent columns exactly, with their storage classes.
+fn stored_consent(db: &Path, lead: &str) -> String {
+    sqlite(
+        db,
+        &format!(
+            "SELECT quote(consent_given) || '|' || typeof(consent_given) || '|' ||
+                quote(consent_on) || '|' || quote(consent_source) FROM leads WHERE id = '{lead}';"
+        ),
+    )
+}
+
+fn unreadable_consents(db: &Path) -> Value {
+    data(&run(db, &["status"]))["unreadable_rows"]["lead_consents"].clone()
+}
+
+#[test]
+fn every_lead_write_keeps_an_unreadable_consent_byte_for_byte() {
+    let scratch = Scratch::new();
+    let db = scratch.database();
+    data(&run(&db, &["settings", "set", "--add-member", "Ana"]));
+    let lead = add_lead(&db, "Consentimiento ilegible", "987650007", "DAC");
+    sqlite(
+        &db,
+        &format!("UPDATE leads SET {UNREADABLE_CONSENT} WHERE id = '{lead}';"),
+    );
+    let stored = stored_consent(&db, &lead);
+    assert_eq!(stored, "1|integer|'2026-02-30'|'Firmó formulario F-12'");
+
+    let mut opened = Value::Null;
+    for args in [
+        vec!["lead", "assign", &lead, "--owner", "Ana"],
+        vec!["lead", "advance", &lead],
+        vec!["lead", "advance", &lead],
+        vec!["lead", "advance", &lead],
+    ] {
+        let moved = data(&run(&db, &args));
+        if !moved["case"].is_null() {
+            opened = moved["case"].clone();
+        }
+        assert_eq!(stored_consent(&db, &lead), stored, "{args:?}");
+        assert_eq!(unreadable_consents(&db), 1, "{args:?}");
+    }
+    let case = opened["id"]
+        .as_str()
+        .expect("the third move opens the case");
+    let closed = data(&run(&db, &["case", "close", case]));
+    assert_eq!(closed["renewal"]["consent"], Value::Null);
+    assert_eq!(stored_consent(&db, &lead), stored);
+    assert_eq!(unreadable_consents(&db), 1);
+
+    let recorded = data(&run(
+        &db,
+        &["lead", "consent", &lead, "--source", "Aceptó por llamada"],
+    ));
+    assert_eq!(recorded["lead"]["consent"]["source"], "Aceptó por llamada");
+    assert_eq!(
+        stored_consent(&db, &lead),
+        "1|integer|'2026-03-02'|'Aceptó por llamada'"
+    );
+    assert_eq!(unreadable_consents(&db), 0);
+}
+
+#[test]
+fn a_retry_in_the_same_second_never_reuses_an_existing_copy() {
+    let scratch = Scratch::new();
+    let db = scratch.database_at(8, "old.db");
+    sqlite(&db, "ALTER TABLE leads ADD COLUMN origin TEXT;");
+    let at = ["--now", "1800000000", "migrate"];
+
+    let (_, first) = failure(&run(&db, &at), 3);
+    let copies = |scratch: &Scratch| -> Vec<String> {
+        scratch
+            .names()
+            .into_iter()
+            .filter(|name| name.contains("antes-de-migrar"))
+            .collect()
+    };
+    let earlier = copies(&scratch);
+    assert_eq!(earlier.len(), 1);
+    assert!(first.contains(&earlier[0]), "{first}");
+    let kept = digest(&scratch.file(&earlier[0]));
+
+    let (code, second) = failure(&run(&db, &at), 3);
+    assert_eq!(code, "migration_failed");
+    let both = copies(&scratch);
+    assert_eq!(both.len(), 2, "{both:?}");
+    let newer = both.iter().find(|name| **name != earlier[0]).unwrap();
+    assert!(second.contains(newer.as_str()), "{second}");
+    assert!(!second.contains(&earlier[0]), "{second}");
+    assert_eq!(digest(&scratch.file(&earlier[0])), kept);
+
+    sqlite(&db, "ALTER TABLE leads DROP COLUMN origin;");
+    let done = data(&run(&db, &at));
+    assert_eq!(done["changed"], true);
+    let third = Path::new(done["safety_copy"].as_str().unwrap())
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(!both.contains(&third), "{third}");
+    assert_eq!(digest(&scratch.file(&earlier[0])), kept);
+}
+
+/// The files an interrupted Windows swap leaves: the database moved aside and
+/// its safety copy, with nothing at the database path.
+fn interrupted_swap(scratch: &Scratch) -> (PathBuf, String, String) {
+    let built = scratch.database();
+    let aside = "crm.aparte-77-0.db".to_owned();
+    let copy = "crm.antes-de-migrar-20270115-030000-77-0.db".to_owned();
+    fs::copy(&built, scratch.file(&copy)).unwrap();
+    fs::rename(&built, scratch.file(&aside)).unwrap();
+    (scratch.file("crm.db"), aside, copy)
+}
+
+#[test]
+fn a_database_left_aside_is_never_replaced_by_a_new_one() {
+    let scratch = Scratch::new();
+    let (db, aside, copy) = interrupted_swap(&scratch);
+    let csv = scratch.file("input.csv");
+    fs::write(
+        &csv,
+        "titular,perfil_icp,n_concesiones,hectareas_totales,departamentos,provincias,sustancias,estados_concesion,servicio_potencial,revisar_manual,fuente_dato\nEmpresa SAC,PERFIL_1,1,10,PIURA,SULLANA,M,TITULADA,DAC,FALSE,Synthetic\n",
+    )
+    .unwrap();
+    let csv = csv.to_str().unwrap();
+    let names = scratch.names();
+
+    for args in [
+        vec!["init"],
+        vec!["status"],
+        vec!["export"],
+        vec!["lead", "list"],
+        vec![
+            "lead",
+            "add",
+            "--name",
+            "N",
+            "--phone",
+            "987650008",
+            "--service",
+            "DAC",
+        ],
+        vec!["migrate"],
+        vec!["prospect", "import", "--companies", csv, "--people", csv],
+    ] {
+        let (code, message) = failure(&run(&db, &args), 3);
+        assert_eq!(code, "database_aside", "{args:?}");
+        assert!(message.contains(&aside), "{message}");
+        assert!(message.contains(&copy), "{message}");
+        assert_eq!(scratch.names(), names, "{args:?}");
+    }
+}

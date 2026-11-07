@@ -20,6 +20,8 @@ Load for any change in `crates/storage`, its migrations, or the database file lo
 - An upgrade holds an exclusive lock (`locking_mode = EXCLUSIVE`, no busy wait) from the safety copy to the swap and refuses a busy database; leave WAL on the old file before renaming over it, so a waiting connection gets `SQLITE_READONLY_DBMOVED` instead of writing into the new file's WAL.
 - Working copies beside the database use a new name created with `create_new`; never remove a fixed name that a user file could hold.
 - Rehydration tolerates one unreadable optional value per row, as with `last_backup_at` and consent, and counts it for `status`; it never echoes the value.
+- A write never overwrites a stored value it could not read: the lead upsert keeps the consent columns when the lead carries no consent. Only an explicit record or revoke replaces them.
+- Working, aside, and safety-copy files all come from `new_file_beside`. While a `*.aparte-*` file exists and the database path is missing, `open` refuses to create a database (`AsideFiles`).
 - `crates/storage` maps rows to domain types and back; no business rules here.
 - Tests use a temporary file or `:memory:`, never the user's real `crm.db`.
 - Install sqlx-cli without `--locked` (the 0.9 release ships no lockfile).

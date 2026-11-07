@@ -297,21 +297,18 @@ async fn opening_an_existing_database_does_not_create_one() {
 }
 
 #[tokio::test]
-async fn a_failed_upgrade_leaves_the_database_and_removes_its_working_copy() {
+async fn a_failed_upgrade_leaves_the_file_and_no_working_files() {
     let scratch = TempDatabase::new();
-    let database = scratch.path();
-    let store = SqliteLeads::open(&database).await.unwrap();
-    store.close().await;
-    let before = fs::read(&database).unwrap();
     let not_a_database = scratch.0.join("copy.db");
     fs::write(&not_a_database, "not a database").unwrap();
 
-    assert!(
-        SqliteLeads::upgrade(&database, &not_a_database)
-            .await
-            .is_err()
-    );
+    let failed = SqliteLeads::upgrade(&not_a_database, "20270115-030000").await;
 
-    assert_eq!(fs::read(&database).unwrap(), before);
-    assert!(!database.with_extension("migrating.db").exists());
+    assert!(failed.is_err());
+    assert_eq!(fs::read(&not_a_database).unwrap(), b"not a database");
+    let names: Vec<String> = fs::read_dir(&scratch.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["copy.db"]);
 }
