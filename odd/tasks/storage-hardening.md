@@ -12,8 +12,9 @@ Branch: `fix/storage-hardening` from `main` at 6ebfa62. Delivery strategy: `sing
 
 ## Tasks
 
-- [ ] T1. S1-S4. Route: delegated, context backstop. Risk: item 1. Commit: pending.
+- [x] T1. S1-S4. Route: delegated, context backstop. Risk: item 1. Commit: 8fa05e2.
 
 ## Log
 
 - L1 (2026-11-07, user answer, verbatim): "yes continue", to the question "¿Sigo con esos cuatro pendientes técnicos, o esperamos primero la prueba en la laptop?". The four items come from native review advisories and the T19 limit recorded in `odd/tasks/lead-pipeline-slice.md`, L46 and L48.
+- L2 (2026-11-07): T1 done in 8fa05e2. RED observed for 7 new CLI tests in `crates/cli/tests/storage_hardening.rs` (busy migrate succeeded, "Carrera 0 was written and then lost", user file `old.migrating.db` deleted, `lead list` exit 3 on a corrupt consent, rollback-journal header changed by a rejected write) and for the storage consent test. S1: `upgrade` opens a `locking_mode = EXCLUSIVE`, zero-wait connection, takes `BEGIN EXCLUSIVE`, makes the safety copy with `VACUUM INTO` under it, migrates the working copy, switches the old file to `journal_mode = DELETE`, and renames while the lock is held (Linux, macOS): no window. A connection waiting on the lock then gets `SQLITE_READONLY_DBMOVED`; without the switch, a probe showed it appending to the new file's WAL. Windows releases the lock first, moves the old file aside (fails while open) and compares its digest; a change puts it back and answers `database_busy`. Remaining Windows window: the path is missing for about 1.1-1.3 ms (measured on Linux, small database), where `init` or a first app launch could create an empty database and migrate then fails with the old data aside. S2: `*.migrando-<pid>-<n>.db` via `create_new`. S3: storage tolerates an unreadable consent per row; `unreadable_rows.lead_consents` in `status`, `export`, and MCP `status`. S4: `open_existing` no longer sets WAL; the storage skill rule was updated. `scripts/check.sh --full`: 607 tests passed, e2e 523 checks, deny passed, exit 0.
