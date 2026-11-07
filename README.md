@@ -44,8 +44,8 @@ scripts/e2e-cli.sh
 | `case` | `list`, `show`, `close` |
 | `step` | `done`, `undo`, `date` |
 | `billing` | `total`, `plan`, `add`, `edit`, `pay`, `unpay`, `delete` |
-| `quote` | `create`, `edit`, `list`, `show`, `send`, `accept`, `reject`, `version`, `pdf` |
-| `settings` | `show`, `set` |
+| `quote` | `create`, `edit`, `list`, `show`, `preview`, `send`, `accept`, `reject`, `version`, `pdf` |
+| `settings` | `show`, `set`, `whatsapp-preview` |
 | `backup` | `create`, `restore` |
 
 The database path is mandatory, through `--db` or `COMINORSA_DB_PATH`; the CLI has no default location, so it cannot reach the app's real data by accident.
@@ -76,11 +76,22 @@ Output is Spanish for people. With `--json`, stdout holds one document on succes
 {"error": {"code": "final_stage", "message": "El lead ya está en la etapa final"}}
 ```
 
+| Exit | Error codes |
+|---|---|
+| 1 | Records: `lead_not_found`, `case_not_found`, `case_not_active`, `step_not_found`, `milestone_not_found`, `quote_not_found`, `prospect_not_found`, `prospect_ambiguous`, `member_not_found` |
+| 1 | Values: `missing_field`, `invalid_ruc`, `invalid_date`, `invalid_amount`, `invalid_quantity`, `invalid_igv_rate`, `invalid_follow_up_days`, `invalid_quote_validity`, `invalid_theme`, `invalid_kind`, `unknown_placeholder`, `empty_quote`, `no_whatsapp_number` |
+| 1 | Rules: `final_stage`, `contract_not_signed`, `owner_not_in_team`, `duplicate_member`, `missing_contract_total`, `milestones_already_planned`, `quote_locked`, `quote_superseded`, `invalid_quote_transition`, `company_name_missing`, `backup_folder_missing`, `id_seed_reused` |
+| 1 | Files: `database_exists`, `import_invalid`, `import_unreadable`, `pdf_failed`, `pdf_target_exists`, `pdf_target_is_database` |
+| 2 | `usage`, `missing_database` |
+| 3 | `database_missing`, `schema_outdated`, `schema_newer`, `migration_failed`, `storage_error`, `corrupt_record`, `backup_folder_unavailable`, `pdf_write_failed`, `runtime_error` |
+
 JSON keys and error codes are stable and in English. Dates are ISO 8601, money is integer cents, and enums use their stored codes. Quotes accept their number, such as `COT-2026-0001-V2`, or their id.
 
 For reproducible runs, `--today <AAAA-MM-DD>` fixes the day, `--now <seconds>` fixes the instant, and `--id-seed <text>` derives new ids from the text. A day alone means noon in Peru. A seed names one request, so use a different one per command. Repeating the identical request with its seed changes nothing in `lead add`, `prospect convert`, `quote create`, `quote version`, `billing add`, and `case close`. When a seed derives an id that already belongs to another record of that kind, the command fails with `id_seed_reused` and nothing changes. Without these flags the CLI uses the system clock and the domain's generated ids, like the app. Two runs of the same commands with the same flags give byte-identical exports, as long as stored paths such as the backup folder match.
 
 `quote pdf --out` refuses an existing file unless `--force` is given, and always refuses the database and its `-wal`, `-shm`, and `-journal` files. `settings set --remove-member` refuses a name that is not on the team, and `billing edit` needs at least one field. Only a team member can own a lead: `lead add`, `lead assign`, and `prospect convert` refuse any other name, and a blank `--owner` clears it.
+
+`quote preview --line` returns the totals of some lines at the stored IGV rate, and `settings whatsapp-preview` renders the stored template for a sample client, or a `--template` to try; neither saves anything. `lead show` adds `follow_up`, its status for the day: `overdue`, `today`, `upcoming`, or `closed`. Commands that change a quote add `notice`, the sentence the app shows.
 
 `export` returns `schema_version`, `leads`, `cases`, `quotes`, `quote_counters`, `prospects`, and `settings` in a stable order, including closed cases with nothing left to collect. `status` returns `schema_version`, `integrity_check`, and `counts`.
 
@@ -129,7 +140,7 @@ The file comes from the public reduced RUC roll, which has no phone or email. Ap
 | `crates/cli` | `cominorsa` CLI: argument parsing and JSON shapes | `application`, `domain`, `importer`, `storage` |
 | `crates/desktop` | Dioxus desktop UI and startup | `application`, `domain`, `storage` |
 
-Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adapter can reuse `domain` and replace SQLite behind `LeadRepository` and `CaseRepository`. Only backup, restore, and the desktop's startup name `SqliteLeads` directly.
+Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adapter can reuse `domain` and replace SQLite behind `LeadRepository` and `CaseRepository`. Only the application's backup and inspection code, the importer, and the desktop name `SqliteLeads`: the desktop opens it at startup and passes it to the use cases.
 
 ## Current limits
 

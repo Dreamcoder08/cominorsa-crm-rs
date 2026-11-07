@@ -401,6 +401,17 @@ refused 1 pdf_target_is_database quote pdf "$primera" --out seeds.db --force
 expect "force writes the PDF" "%PDF" "$(head -c 4 victim.csv)"
 db=crm.db
 
+echo "== what the app shows is reachable from here"
+db=seeds.db
+preview="$(cli quote preview --line "a|2|100" --line "b|1|50.50")"
+expect "preview total" 29559 "$(jq '.total_cents' <<<"$preview")"
+expect "stored template preview" true "$(cli settings whatsapp-preview | jq '.message | length > 0')"
+expect "tried template preview" "Sobre REINFO" "$(cli settings whatsapp-preview --template 'Sobre {servicio}' | jq -r '.message')"
+expect "follow-up status" upcoming "$(cli lead show "$dos" | jq -r '.follow_up.status')"
+expect "a quote change carries its notice" "$segunda marcada como rechazada." \
+    "$(cli quote reject "$segunda" | jq -r '.notice')"
+db=crm.db
+
 echo "== an older schema is reported, never migrated by a read"
 cp "$root/first/crm.db" old.db
 sqlite3 old.db "PRAGMA journal_mode = DELETE;

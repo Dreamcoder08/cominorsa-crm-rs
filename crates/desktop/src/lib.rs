@@ -30,10 +30,10 @@ pub use cominorsa_application::{
     closed_case_label, closing_notice, company_lines, company_warning, create_backup, format_date,
     format_igv_rate, format_soles, format_timestamp, igv_input, igv_label, lead_quotes,
     matches_query, milestone_gap_warning, milestone_status_label, money_input, next_follow_up,
-    owner_options, parse_form, parse_step_date, profile_label, quote_change, quote_file_name,
-    quote_notice, quote_pdf, quote_preview, renewal_note, responsible_label, restore_backup,
-    save_advance, save_billing, save_close, save_quote, step_status_label, suggested_total_note,
-    today_in_peru, toggled_step, write_pdf,
+    owner_options, parse_form, parse_step_date, preview_message, profile_label, quote_change,
+    quote_file_name, quote_notice, quote_pdf, quote_preview, renewal_note, responsible_label,
+    restore_backup, save_advance, save_billing, save_close, save_quote, step_status_label,
+    suggested_total_note, today_in_peru, toggled_step, write_pdf,
 };
 pub use presentation::{quote_status_class, tax_status_class};
 pub use quote_view::QuotePanel;

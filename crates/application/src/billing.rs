@@ -165,6 +165,85 @@ where
     Ok(true)
 }
 
+/// Marks a milestone paid today or pending. Returns `false`, changing nothing,
+/// when it is already that way.
+pub async fn set_paid<R>(
+    repository: &R,
+    id: Uuid,
+    paid: bool,
+    context: &mut Context,
+) -> Result<bool, AppError>
+where
+    R: BillingRepository + CaseRepository,
+{
+    let (file, milestone) = find_milestone(repository, id).await?;
+    if milestone.is_paid() == paid {
+        return Ok(false);
+    }
+
+    let draft = MilestoneValues::default();
+    apply_billing(
+        repository,
+        &file,
+        BillingEdit::TogglePaid(milestone),
+        &draft,
+        context,
+    )
+    .await
+}
+
+/// The fields of a milestone to change. Anything left out stays as stored.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MilestoneFields {
+    pub title: Option<String>,
+    pub amount: Option<String>,
+    pub due_on: Option<String>,
+}
+
+/// One field of a milestone edit, validated without saving.
+fn revised(
+    file: &CaseFile,
+    current: BillingMilestone,
+    edit: BillingEdit,
+    today: Date,
+) -> Result<BillingMilestone, AppError> {
+    let draft = MilestoneValues::default();
+
+    match billing_change(file, edit, &draft, today)? {
+        BillingChange::Save(next) => Ok(next),
+        _ => Ok(current),
+    }
+}
+
+/// Validates every field before saving once, so a refused edit stores nothing.
+pub async fn edit_milestone<R>(
+    repository: &R,
+    id: Uuid,
+    fields: MilestoneFields,
+    context: &Context,
+) -> Result<(), AppError>
+where
+    R: BillingRepository + CaseRepository,
+{
+    let today = context.clock.today();
+    let (file, mut milestone) = find_milestone(repository, id).await?;
+
+    if let Some(value) = fields.title {
+        let edit = BillingEdit::Title(milestone.clone(), value);
+        milestone = revised(&file, milestone, edit, today)?;
+    }
+    if let Some(value) = fields.amount {
+        let edit = BillingEdit::Amount(milestone.clone(), value);
+        milestone = revised(&file, milestone, edit, today)?;
+    }
+    if let Some(value) = fields.due_on {
+        let edit = BillingEdit::DueDate(milestone.clone(), value);
+        milestone = revised(&file, milestone, edit, today)?;
+    }
+
+    save_billing(repository, BillingChange::Save(milestone)).await
+}
+
 pub async fn find_milestone<R: CaseRepository>(
     repository: &R,
     id: Uuid,

@@ -1,13 +1,10 @@
 //! Settings section. Rules live in the domain; this view only calls them.
 //! Valid changes save automatically and every section reports the same state.
 
-use cominorsa_domain::{CompanyProfile, IgvRate, Settings, ThemePreference, render_message};
+use cominorsa_domain::{CompanyProfile, IgvRate, Settings, ThemePreference};
 use dioxus::prelude::*;
 
-use crate::{format_timestamp, igv_input};
-
-const PREVIEW_NAME: &str = "Minera Ejemplo";
-const PREVIEW_SERVICE: &str = "REINFO";
+use crate::{format_timestamp, igv_input, preview_message};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum SaveState {
@@ -63,7 +60,7 @@ pub fn SettingsView(
     };
     let days_settings = settings.clone();
     let template_settings = settings.clone();
-    let preview = render_message(&template_text(), PREVIEW_NAME, PREVIEW_SERVICE);
+    let preview = preview_message(&template_text());
     let backup_status = settings.last_backup_at().map_or_else(
         || "Aún no hay copias".to_owned(),
         |at| format!("Última copia: {}", format_timestamp(at)),

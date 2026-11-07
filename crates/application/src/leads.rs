@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::{
     context::{Context, Ids},
     error::AppError,
+    presentation::{matches_query, next_follow_up},
 };
 
 const MANUAL_REVIEW_SERVICE: &str = "REVISAR_MANUAL";
@@ -143,6 +144,44 @@ where
         lead,
         created: true,
     })
+}
+
+/// The follow-up date a new lead gets when none is given.
+pub async fn default_follow_up<R: SettingsRepository>(
+    repository: &R,
+    today: Date,
+) -> Result<String, AppError> {
+    let days = repository.load().await?.follow_up_days();
+
+    Ok(next_follow_up(today, days).to_string())
+}
+
+/// The leads a search finds, in the stored order.
+pub async fn search_leads<R: LeadRepository>(
+    repository: &R,
+    query: &str,
+) -> Result<Vec<Lead>, AppError> {
+    let mut leads = repository.list().await?;
+    leads.retain(|lead| matches_query(lead, query));
+
+    Ok(leads)
+}
+
+/// The prepared chat link of a lead. A person reviews and sends the message.
+pub async fn whatsapp_link<R>(repository: &R, id: Uuid) -> Result<String, AppError>
+where
+    R: LeadRepository + SettingsRepository,
+{
+    let lead = find_lead(repository, id).await?;
+    let settings = repository.load().await?;
+
+    lead.whatsapp_url(settings.whatsapp_template())
+        .ok_or_else(|| {
+            AppError::rejected(
+                "no_whatsapp_number",
+                "Ese teléfono no sirve para abrir un chat",
+            )
+        })
 }
 
 pub async fn find_lead<R: LeadRepository>(repository: &R, id: Uuid) -> Result<Lead, AppError> {

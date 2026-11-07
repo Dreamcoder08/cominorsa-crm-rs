@@ -5,25 +5,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use cominorsa_application::{
-    AppError, BillingChange, BillingEdit, Clock, Context, FormValues, Ids, MilestoneValues,
-    PdfTarget, PipelineSummary, ProspectConversion, QuoteEdit, QuoteLineValues, QuoteValues,
-    SettingsChange, add_lead, advance_lead, agenda, apply_billing, assign_lead, billing_change,
-    close_case, close_warning, closing_notice, convert_prospect, create_database, find_case,
-    find_lead, find_milestone, find_quote, find_stored_case, lead_quotes, matches_query,
-    migrate_database, milestone_gap_warning, next_follow_up, open_for_reading, open_for_writing,
-    reschedule_step, restore_backup, run_backup, save_billing, save_quote_edit, save_quote_pdf,
-    send_quote, set_step_done, snapshot, status, suggested_total_note, update_settings,
-};
-use cominorsa_domain::{
-    BillingMilestone, BillingSummary, CaseFile, CaseRepository, LeadRepository, ProspectKind,
-    ProspectRepository, Quote, QuoteRepository, SettingsRepository,
-};
-use cominorsa_importer::{ImportError, enrich, run as import};
-use cominorsa_storage::SqliteLeads;
-use serde_json::{Value, json};
-use uuid::Uuid;
-
 use crate::{
     args::{
         BackupCommand, BillingCommand, CaseCommand, Cli, Command, LeadCommand, ProspectCommand,
@@ -31,6 +12,24 @@ use crate::{
     },
     views,
 };
+use cominorsa_application::{
+    AppError, BillingEdit, Clock, Context, FollowUp, FormValues, Ids, MilestoneFields,
+    MilestoneValues, PdfTarget, PipelineSummary, ProspectConversion, QuoteEdit, QuoteFields,
+    QuoteValues, SettingsChange, add_lead, advance_lead, agenda, apply_billing, assign_lead,
+    close_case, close_warning, closing_notice, convert_prospect, create_database, create_quote,
+    default_follow_up, edit_milestone, edit_quote, find_case, find_lead, find_milestone,
+    find_quote, find_stored_case, format_soles, lead_quotes, migrate_database,
+    milestone_gap_warning, open_for_reading, open_for_writing, parse_prospect_kind, preview_quote,
+    reschedule_step, restore_backup, run_backup, save_quote_edit, save_quote_pdf, search_leads,
+    send_quote, set_paid, set_step_done, snapshot, status, suggested_total_note, update_settings,
+    whatsapp_link, whatsapp_preview,
+};
+use cominorsa_domain::{
+    BillingSummary, CaseRepository, LeadRepository, ProspectRepository, Quote, QuoteRepository,
+    SettingsRepository,
+};
+use cominorsa_importer::{ImportError, enrich, run as import};
+use serde_json::{Value, json};
 
 const DATABASE_PATH_VARIABLE: &str = "COMINORSA_DB_PATH";
 
@@ -192,10 +191,7 @@ async fn lead(path: &Path, command: LeadCommand, context: &mut Context) -> Resul
             let store = open_for_writing(path).await?;
             let follow_up_on = match follow_up {
                 Some(date) => date,
-                None => {
-                    let days = store.load().await.map_err(AppError::from)?.follow_up_days();
-                    next_follow_up(context.clock.today(), days).to_string()
-                }
+                None => default_follow_up(&store, context.clock.today()).await?,
             };
             let values = FormValues {
                 name,
@@ -215,30 +211,34 @@ async fn lead(path: &Path, command: LeadCommand, context: &mut Context) -> Resul
         }
         LeadCommand::List { query } => {
             let store = open_for_reading(path).await?;
-            let leads = store.list().await.map_err(AppError::from)?;
+            let found = search_leads(&store, &query.unwrap_or_default()).await?;
             store.close().await;
-            let query = query.unwrap_or_default();
-            let found: Vec<_> = leads
-                .iter()
-                .filter(|lead| matches_query(lead, &query))
-                .collect();
             let text = found
                 .iter()
                 .map(|lead| format!("{} {} ({})", lead.id(), lead.name(), lead.stage().label()))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let data = found
-                .iter()
-                .map(|lead| views::lead(lead))
-                .collect::<Vec<_>>();
+            let data = found.iter().map(views::lead).collect::<Vec<_>>();
             Reply::new(json!({"leads": data}), text)
         }
         LeadCommand::Show { id } => {
             let store = open_for_reading(path).await?;
             let lead = find_lead(&store, id).await?;
             store.close().await;
-            let text = format!("{} ({})", lead.name(), lead.stage().label());
-            Reply::new(json!({"lead": views::lead(&lead)}), text)
+            let follow_up = FollowUp::of(&lead, context.clock.today());
+            let text = format!(
+                "{} ({})\n{}",
+                lead.name(),
+                lead.stage().label(),
+                follow_up.label()
+            );
+            Reply::new(
+                json!({
+                    "lead": views::lead(&lead),
+                    "follow_up": {"status": follow_up.class(), "label": follow_up.label()},
+                }),
+                text,
+            )
         }
         LeadCommand::Summary => {
             let store = open_for_reading(path).await?;
@@ -288,17 +288,8 @@ async fn lead(path: &Path, command: LeadCommand, context: &mut Context) -> Resul
         }
         LeadCommand::Whatsapp { id } => {
             let store = open_for_reading(path).await?;
-            let lead = find_lead(&store, id).await?;
-            let settings = store.load().await.map_err(AppError::from)?;
+            let url = whatsapp_link(&store, id).await?;
             store.close().await;
-            let url = lead
-                .whatsapp_url(settings.whatsapp_template())
-                .ok_or_else(|| {
-                    AppError::rejected(
-                        "no_whatsapp_number",
-                        "Ese teléfono no sirve para abrir un chat",
-                    )
-                })?;
             Reply::new(json!({"url": url}), url.clone())
         }
     };
@@ -308,11 +299,6 @@ async fn lead(path: &Path, command: LeadCommand, context: &mut Context) -> Resul
 
 fn optional_path(path: Option<&Path>) -> Option<String> {
     path.map(|path| path.display().to_string())
-}
-
-fn parse_kind(code: &str) -> Result<ProspectKind, AppError> {
-    ProspectKind::from_code(code)
-        .ok_or_else(|| AppError::rejected("invalid_kind", "Indica company o person"))
 }
 
 async fn prospect(
@@ -378,7 +364,7 @@ async fn prospect(
             let store = open_for_writing(path).await?;
             let conversion = ProspectConversion {
                 name,
-                kind: kind.as_deref().map(parse_kind).transpose()?,
+                kind: kind.as_deref().map(parse_prospect_kind).transpose()?,
                 phone,
                 service,
                 owner,
@@ -483,70 +469,6 @@ async fn step(path: &Path, command: StepCommand, context: &Context) -> Result<Re
     Ok(reply)
 }
 
-async fn set_paid(
-    store: &SqliteLeads,
-    id: Uuid,
-    paid: bool,
-    context: &mut Context,
-) -> Result<bool, AppError> {
-    let (file, milestone) = find_milestone(store, id).await?;
-    if milestone.is_paid() == paid {
-        return Ok(false);
-    }
-
-    let draft = MilestoneValues::default();
-    apply_billing(
-        store,
-        &file,
-        BillingEdit::TogglePaid(milestone),
-        &draft,
-        context,
-    )
-    .await
-}
-
-/// One field of a milestone edit, validated without saving.
-fn revised(
-    file: &CaseFile,
-    current: BillingMilestone,
-    edit: BillingEdit,
-    context: &Context,
-) -> Result<BillingMilestone, AppError> {
-    let draft = MilestoneValues::default();
-
-    match billing_change(file, edit, &draft, context.clock.today())? {
-        BillingChange::Save(next) => Ok(next),
-        _ => Ok(current),
-    }
-}
-
-/// Validates every field before saving once, so a refused edit stores nothing.
-async fn edit_milestone(
-    store: &SqliteLeads,
-    id: Uuid,
-    title: Option<String>,
-    amount: Option<String>,
-    due: Option<String>,
-    context: &Context,
-) -> Result<(), AppError> {
-    let (file, mut milestone) = find_milestone(store, id).await?;
-
-    if let Some(value) = title {
-        let edit = BillingEdit::Title(milestone.clone(), value);
-        milestone = revised(&file, milestone, edit, context)?;
-    }
-    if let Some(value) = amount {
-        let edit = BillingEdit::Amount(milestone.clone(), value);
-        milestone = revised(&file, milestone, edit, context)?;
-    }
-    if let Some(value) = due {
-        let edit = BillingEdit::DueDate(milestone.clone(), value);
-        milestone = revised(&file, milestone, edit, context)?;
-    }
-
-    save_billing(store, BillingChange::Save(milestone)).await
-}
-
 async fn billing(
     path: &Path,
     command: BillingCommand,
@@ -602,7 +524,12 @@ async fn billing(
             amount,
             due,
         } => {
-            edit_milestone(&store, id, title, amount, due, context).await?;
+            let fields = MilestoneFields {
+                title,
+                amount,
+                due_on: due,
+            };
+            edit_milestone(&store, id, fields, context).await?;
             Reply::new(json!({"changed": true}), "Hito guardado.")
         }
         BillingCommand::Pay { id } => {
@@ -624,23 +551,20 @@ async fn billing(
     Ok(reply)
 }
 
-fn overlay(values: &mut QuoteValues, content: QuoteContentArgs) {
-    if let Some(date) = content.issued_on {
-        values.issued_on = date;
-    }
-    if let Some(date) = content.valid_until {
-        values.valid_until = date;
-    }
-    if let Some(notes) = content.notes {
-        values.notes = notes;
-    }
-    if !content.line.is_empty() {
-        values.lines = content.line;
+fn quote_fields(content: QuoteContentArgs) -> QuoteFields {
+    QuoteFields {
+        issued_on: content.issued_on,
+        valid_until: content.valid_until,
+        notes: content.notes,
+        lines: content.line,
     }
 }
 
 fn saved_quote(quote: &Quote, notice: String) -> Reply {
-    Reply::new(json!({"quote": views::quote(quote)}), notice)
+    Reply::new(
+        json!({"quote": views::quote(quote), "notice": notice}),
+        notice,
+    )
 }
 
 async fn quote(
@@ -650,7 +574,10 @@ async fn quote(
 ) -> Result<Reply, Failure> {
     let reads = matches!(
         command,
-        QuoteCommand::List { .. } | QuoteCommand::Show { .. } | QuoteCommand::Pdf { .. }
+        QuoteCommand::List { .. }
+            | QuoteCommand::Show { .. }
+            | QuoteCommand::Pdf { .. }
+            | QuoteCommand::Preview { .. }
     );
     let store = if reads {
         open_for_reading(path).await?
@@ -662,18 +589,14 @@ async fn quote(
     let reply = match command {
         QuoteCommand::Create { lead, content } => {
             let lead = find_lead(&store, lead).await?;
-            let mut values = QuoteValues::starting_on(today);
-            values.lines = Vec::<QuoteLineValues>::new();
-            overlay(&mut values, content);
-            let saved = save_quote_edit(&store, &lead, QuoteEdit::Save, &values, context).await?;
+            let saved = create_quote(&store, &lead, quote_fields(content), context).await?;
             saved_quote(&saved.quote, saved.notice)
         }
         QuoteCommand::Edit { quote, content } => {
             let quote = find_quote(&store, &quote).await?;
             let lead = find_lead(&store, quote.lead_id()).await?;
-            let mut values = QuoteValues::of_quote(&quote);
-            overlay(&mut values, content);
-            let saved = save_quote_edit(&store, &lead, QuoteEdit::Save, &values, context).await?;
+            let fields = quote_fields(content);
+            let saved = edit_quote(&store, &lead, &quote, fields, context).await?;
             saved_quote(&saved.quote, saved.notice)
         }
         QuoteCommand::List { lead } => {
@@ -693,7 +616,7 @@ async fn quote(
         QuoteCommand::Show { quote } => {
             let quote = find_quote(&store, &quote).await?;
             let text = format!("{} {}", quote.number(), quote.status().label());
-            saved_quote(&quote, text)
+            Reply::new(json!({"quote": views::quote(&quote)}), text)
         }
         QuoteCommand::Send {
             quote,
@@ -725,6 +648,23 @@ async fn quote(
                 save_quote_edit(&store, &lead, QuoteEdit::NewVersion(quote), &blank, context)
                     .await?;
             saved_quote(&saved.quote, saved.notice)
+        }
+        QuoteCommand::Preview { line } => {
+            let totals = preview_quote(&store, line).await?;
+            let text = format!(
+                "Subtotal: {}\nIGV: {}\nTotal: {}",
+                format_soles(totals.subtotal),
+                format_soles(totals.igv),
+                format_soles(totals.total)
+            );
+            Reply::new(
+                json!({
+                    "subtotal_cents": totals.subtotal.cents(),
+                    "igv_cents": totals.igv.cents(),
+                    "total_cents": totals.total.cents(),
+                }),
+                text,
+            )
         }
         QuoteCommand::Pdf { quote, out, force } => {
             let quote = find_quote(&store, &quote).await?;
@@ -769,6 +709,12 @@ async fn settings(path: &Path, command: SettingsCommand) -> Result<Reply, Failur
             let data = views::settings(&saved);
             let text = serde_json::to_string_pretty(&data).unwrap_or_default();
             Reply::new(data, text)
+        }
+        SettingsCommand::WhatsappPreview { template } => {
+            let store = open_for_reading(path).await?;
+            let message = whatsapp_preview(&store, template.as_deref()).await?;
+            store.close().await;
+            Reply::new(json!({"message": message}), message.clone())
         }
         SettingsCommand::Set(arguments) => {
             let store = open_for_writing(path).await?;

@@ -21,6 +21,11 @@ pub struct ProspectConversion {
     pub follow_up_on: Option<String>,
 }
 
+pub fn parse_prospect_kind(code: &str) -> Result<ProspectKind, AppError> {
+    ProspectKind::from_code(code)
+        .ok_or_else(|| AppError::rejected("invalid_kind", "Indica company o person"))
+}
+
 /// Creates a lead from the prospect with exactly this name.
 pub async fn convert_prospect<R>(
     repository: &R,

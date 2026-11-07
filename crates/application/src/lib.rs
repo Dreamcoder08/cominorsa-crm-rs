@@ -18,8 +18,8 @@ mod settings;
 
 pub use backup::{Restored, create_backup, restore_backup, run_backup};
 pub use billing::{
-    BillingChange, BillingEdit, MilestoneValues, apply_billing, billing_change, find_milestone,
-    parse_milestone_date, save_billing,
+    BillingChange, BillingEdit, MilestoneFields, MilestoneValues, apply_billing, billing_change,
+    edit_milestone, find_milestone, parse_milestone_date, save_billing, set_paid,
 };
 pub use cases::{
     CaseClosing, agenda, close_case, find_case, find_step, find_stored_case, parse_step_date,
@@ -32,8 +32,8 @@ pub use inspect::{
     open_for_writing, snapshot, status,
 };
 pub use leads::{
-    Advance, FormValues, NewLeadOutcome, add_lead, advance_lead, assign_lead, find_lead,
-    parse_form, save_advance,
+    Advance, FormValues, NewLeadOutcome, add_lead, advance_lead, assign_lead, default_follow_up,
+    find_lead, parse_form, save_advance, search_leads, whatsapp_link,
 };
 pub use presentation::{
     AgendaGroups, AgendaItem, FollowUp, PipelineSummary, QUOTE_TAX_NOTE, accepted_notice,
@@ -43,11 +43,13 @@ pub use presentation::{
     next_follow_up, owner_options, profile_label, quote_file_name, renewal_note, responsible_label,
     step_status_label, suggested_total_note,
 };
-pub use prospects::{PROSPECT_PAGE_SIZE, ProspectConversion, convert_prospect};
+pub use prospects::{
+    PROSPECT_PAGE_SIZE, ProspectConversion, convert_prospect, parse_prospect_kind,
+};
 pub use quote_pdf::{quote_pdf, write_pdf};
 pub use quotes::{
-    PdfTarget, QuoteChange, QuoteEdit, QuoteLineValues, QuoteValues, SavedQuote, find_quote,
-    lead_quotes, quote_change, quote_notice, quote_preview, save_quote, save_quote_edit,
-    save_quote_pdf, send_quote,
+    PdfTarget, QuoteChange, QuoteEdit, QuoteFields, QuoteLineValues, QuoteValues, SavedQuote,
+    create_quote, edit_quote, find_quote, lead_quotes, preview_quote, quote_change, quote_notice,
+    quote_preview, save_quote, save_quote_edit, save_quote_pdf, send_quote,
 };
-pub use settings::{SettingsChange, update_settings};
+pub use settings::{SettingsChange, preview_message, update_settings, whatsapp_preview};

@@ -281,6 +281,12 @@ pub enum QuoteCommand {
     Reject { quote: String },
     /// Crea una nueva versión de una cotización enviada
     Version { quote: String },
+    /// Calcula los totales de unas líneas sin guardar nada
+    Preview {
+        /// descripción|cantidad|precio, sin IGV. Se puede repetir
+        #[arg(long, required = true, value_name = "LINEA", value_parser = parse_line)]
+        line: Vec<QuoteLineValues>,
+    },
     /// Guarda la cotización en PDF
     Pdf {
         quote: String,
@@ -307,6 +313,12 @@ pub struct QuoteContentArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum SettingsCommand {
+    /// Muestra cómo queda el mensaje de WhatsApp con un cliente de ejemplo
+    WhatsappPreview {
+        /// Prueba este texto en lugar del guardado, sin guardarlo
+        #[arg(long, value_name = "TEXTO")]
+        template: Option<String>,
+    },
     /// Muestra la configuración
     Show,
     /// Cambia varios valores: todos o ninguno

@@ -1,8 +1,31 @@
 //! Changing several settings as one unit.
 
-use cominorsa_domain::{CompanyProfile, IgvRate, Settings, SettingsRepository, ThemePreference};
+use cominorsa_domain::{
+    CompanyProfile, IgvRate, Settings, SettingsRepository, ThemePreference, render_message,
+};
 
 use crate::error::AppError;
+
+const PREVIEW_NAME: &str = "Minera Ejemplo";
+const PREVIEW_SERVICE: &str = "REINFO";
+
+/// What a template says to a sample client.
+pub fn preview_message(template: &str) -> String {
+    render_message(template, PREVIEW_NAME, PREVIEW_SERVICE)
+}
+
+/// Previews a candidate template, or the stored one, without saving anything.
+pub async fn whatsapp_preview<R: SettingsRepository>(
+    repository: &R,
+    template: Option<&str>,
+) -> Result<String, AppError> {
+    let mut settings = repository.load().await?;
+    if let Some(template) = template {
+        settings.set_whatsapp_template(template)?;
+    }
+
+    Ok(preview_message(settings.whatsapp_template()))
+}
 
 /// The settings to change. Anything left out stays as stored.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

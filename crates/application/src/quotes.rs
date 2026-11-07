@@ -119,6 +119,33 @@ impl QuoteValues {
     }
 }
 
+/// The parts of a quote to set. Anything left out keeps its value, and lines
+/// replace the whole list.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct QuoteFields {
+    pub issued_on: Option<String>,
+    pub valid_until: Option<String>,
+    pub notes: Option<String>,
+    pub lines: Vec<QuoteLineValues>,
+}
+
+impl QuoteFields {
+    fn apply_to(self, values: &mut QuoteValues) {
+        if let Some(date) = self.issued_on {
+            values.issued_on = date;
+        }
+        if let Some(date) = self.valid_until {
+            values.valid_until = date;
+        }
+        if let Some(notes) = self.notes {
+            values.notes = notes;
+        }
+        if !self.lines.is_empty() {
+            values.lines = self.lines;
+        }
+    }
+}
+
 /// What a person asked for in the quote panel, before validation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QuoteEdit {
@@ -301,6 +328,59 @@ where
     let today = context.clock.today();
 
     save_edit(repository, lead, edit, values, today, &mut context.ids).await
+}
+
+/// Saves a new draft for the lead. Unlike the panel, it starts with no lines.
+pub async fn create_quote<R>(
+    repository: &R,
+    lead: &Lead,
+    fields: QuoteFields,
+    context: &mut Context,
+) -> Result<SavedQuote, AppError>
+where
+    R: QuoteRepository + SettingsRepository + CaseRepository,
+{
+    let mut values = QuoteValues {
+        lines: Vec::new(),
+        ..QuoteValues::starting_on(context.clock.today())
+    };
+    fields.apply_to(&mut values);
+
+    save_quote_edit(repository, lead, QuoteEdit::Save, &values, context).await
+}
+
+/// Changes the given parts of a stored draft.
+pub async fn edit_quote<R>(
+    repository: &R,
+    lead: &Lead,
+    quote: &Quote,
+    fields: QuoteFields,
+    context: &mut Context,
+) -> Result<SavedQuote, AppError>
+where
+    R: QuoteRepository + SettingsRepository + CaseRepository,
+{
+    let mut values = QuoteValues::of_quote(quote);
+    fields.apply_to(&mut values);
+
+    save_quote_edit(repository, lead, QuoteEdit::Save, &values, context).await
+}
+
+/// The totals of some lines at the stored rate, or why a line cannot be read.
+pub async fn preview_quote<R: SettingsRepository>(
+    repository: &R,
+    lines: Vec<QuoteLineValues>,
+) -> Result<QuoteTotals, AppError> {
+    let settings = repository.load().await?;
+    let values = QuoteValues {
+        lines,
+        ..QuoteValues::default()
+    };
+
+    Ok(QuoteTotals::of(
+        &values.parsed_lines()?,
+        settings.igv_rate(),
+    )?)
 }
 
 /// Marks a quote sent. The panel asks before sending without a company name,
