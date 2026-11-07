@@ -142,6 +142,20 @@ pub async fn migrate_database(path: &Path, clock: &Clock) -> Result<Migration, A
     })
 }
 
+/// Opens the database the app works on. A missing file is created, and an older
+/// schema goes through `migrate_database`, so the app has no upgrade of its own
+/// and what `cominorsa migrate` proves holds here. A refused or failed upgrade
+/// returns its error and leaves the file as it was.
+pub async fn open_at_startup(path: &Path, clock: &Clock) -> Result<SqliteLeads, AppError> {
+    if path.exists() {
+        migrate_database(path, clock).await?;
+    } else {
+        create_database(path).await?;
+    }
+
+    open_for_writing(path).await
+}
+
 /// Everything stored, in a stable order, to compare full state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {

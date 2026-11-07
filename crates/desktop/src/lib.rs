@@ -1,6 +1,9 @@
 //! Desktop adapter: Dioxus views over the application layer.
 
-use std::{env, path::PathBuf};
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
 mod billing_view;
 mod cases_view;
@@ -9,6 +12,7 @@ mod quote_view;
 mod settings_view;
 mod views;
 
+use cominorsa_application::open_at_startup;
 use cominorsa_domain::{
     Case, CaseFile, CaseRepository, CaseStep, Lead, LeadRepository, Prospect, ProspectRepository,
     Quote, QuoteRepository, Settings, SettingsRepository,
@@ -71,6 +75,12 @@ async fn restore_copy(store: SqliteLeads, backup: PathBuf) -> Result<SqliteLeads
 
 /// Loads settings before the window opens, so the saved theme never flashes.
 pub fn load_initial_settings() -> Settings {
+    database_path().map_or_else(|_| Settings::default(), |path| initial_settings(&path))
+}
+
+/// The settings stored at `path`, or the defaults when they cannot be read.
+/// This only reads: the window reports what `open_database` finds.
+pub fn initial_settings(path: &Path) -> Settings {
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -79,7 +89,7 @@ pub fn load_initial_settings() -> Settings {
     };
 
     runtime.block_on(async {
-        let Ok(store) = open_store().await else {
+        let Ok(store) = SqliteLeads::open_read_only(path).await else {
             return Settings::default();
         };
         let settings = store.load().await.unwrap_or_default();
@@ -89,8 +99,13 @@ pub fn load_initial_settings() -> Settings {
 }
 
 async fn open_store() -> Result<SqliteLeads, String> {
-    let path = database_path()?;
-    SqliteLeads::open(&path)
+    open_database(&database_path()?).await
+}
+
+/// Opens the app's database, creating or upgrading it safely. The error is what
+/// the window shows, with the location of the copy when an upgrade fails.
+pub async fn open_database(path: &Path) -> Result<SqliteLeads, String> {
+    open_at_startup(path, &Clock::system())
         .await
         .map_err(|error| error.to_string())
 }

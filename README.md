@@ -60,7 +60,9 @@ The CLI never creates or upgrades a database by itself. `init` creates a new one
 
 `migrate` is the only command that upgrades. It copies the database beside itself as `*.antes-de-migrar-*.db`, migrates a working copy, and replaces the database with a rename. If a migration fails, it reports `migration_failed`, the database stays as it was, and the copy stays beside it. Close the app before migrating. `backup restore` is the one other path that changes the schema: an older backup is brought to the current schema before it replaces the database, and the backup file itself does not change.
 
-A command that only reads opens the file read-only. SQLite may leave an empty `-wal` and a `-shm` file beside the database after a read; the database file itself does not change. The desktop app is separate: it still migrates on startup.
+A command that only reads opens the file read-only. SQLite may leave an empty `-wal` and a `-shm` file beside the database after a read or a rejected write; the database file itself does not change. A database in the rollback journal is the exception, listed under [Current limits](#current-limits).
+
+The desktop app has no upgrade of its own: at startup it creates a missing database and sends an older one through the same path as `migrate`. If that fails, the app shows the cause and where the copy is, works on no half-upgraded file, and the database stays as it was. A newer schema is refused the same way. Each failed launch keeps its own copy.
 
 | Exit code | Meaning |
 |---|---|
