@@ -74,6 +74,7 @@ pub fn parse_form(values: FormValues) -> Result<Lead, String> {
         phone: values.phone,
         ruc: Some(values.ruc),
         service: values.service,
+        owner: None,
         follow_up_on,
     })
     .map_err(|error| error.to_string())

@@ -7,6 +7,7 @@ fn new_lead(ruc: Option<&str>) -> NewLead {
         phone: "900000000".to_owned(),
         ruc: ruc.map(str::to_owned),
         service: "REINFO".to_owned(),
+        owner: None,
         follow_up_on: date!(2026 - 11 - 10),
     }
 }
@@ -109,4 +110,18 @@ fn flags_follow_up_due_today_or_earlier_unless_contract_is_signed() {
     lead.advance().unwrap();
     lead.advance().unwrap();
     assert!(!lead.is_follow_up_due(date!(2026 - 11 - 11)));
+}
+
+#[test]
+fn assigns_and_clears_the_responsible_person() {
+    let mut input = new_lead(None);
+    input.owner = Some("  Ana  ".to_owned());
+    let mut lead = Lead::create(input).unwrap();
+    assert_eq!(lead.owner(), Some("Ana"));
+
+    lead.assign(Some("Luis"));
+    assert_eq!(lead.owner(), Some("Luis"));
+
+    lead.assign(Some("   "));
+    assert_eq!(lead.owner(), None);
 }

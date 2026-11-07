@@ -35,6 +35,7 @@ fn lead(name: &str, follow_up_on: time::Date) -> Lead {
         phone: "900000000".to_owned(),
         ruc: Some("20123456786".to_owned()),
         service: "IGAFOM".to_owned(),
+        owner: None,
         follow_up_on,
     })
     .unwrap()
@@ -230,6 +231,8 @@ async fn persists_settings_across_reopen_and_replaces_the_team() {
     settings.add_member("Ana").unwrap();
     settings.add_member("Luis").unwrap();
     settings.set_whatsapp_template("Hola {nombre}").unwrap();
+    settings.set_backup_directory("/media/usb");
+    settings.record_backup(1_800_000_000);
     store.persist(&settings).await.unwrap();
 
     settings.remove_member("Ana");
@@ -279,4 +282,98 @@ async fn keeps_leads_and_prospects_when_upgrading_from_the_second_schema() {
     assert_eq!(upgraded.list().await.unwrap().len(), 1);
     assert_eq!(upgraded.count().await.unwrap(), 1);
     assert_eq!(upgraded.load().await.unwrap(), Settings::default());
+}
+
+#[tokio::test]
+async fn saves_the_responsible_person() {
+    let database = TempDatabase::new();
+    let store = SqliteLeads::open(&database.path()).await.unwrap();
+    let mut saved = lead("Minera", date!(2026 - 11 - 01));
+    saved.assign(Some("Ana"));
+
+    store.save(&saved).await.unwrap();
+    assert_eq!(store.list().await.unwrap()[0].owner(), Some("Ana"));
+
+    saved.assign(None);
+    store.save(&saved).await.unwrap();
+    assert_eq!(store.list().await.unwrap()[0].owner(), None);
+}
+
+#[tokio::test]
+async fn keeps_data_and_settings_when_upgrading_from_the_third_schema() {
+    let database = TempDatabase::new();
+    fs::create_dir_all(database.path().parent().unwrap()).unwrap();
+    let options = SqliteConnectOptions::new()
+        .filename(database.path())
+        .create_if_missing(true);
+    let old = SqlitePool::connect_with(options).await.unwrap();
+    let mut third_schema = sqlx::migrate!("./migrations");
+    third_schema.migrations = Cow::Owned(
+        third_schema
+            .migrations
+            .iter()
+            .filter(|migration| migration.version <= 3)
+            .cloned()
+            .collect(),
+    );
+    third_schema.run(&old).await.unwrap();
+    sqlx::query(
+        "INSERT INTO leads VALUES ('00000000-0000-7000-8000-000000000001', 'Antiguo',
+            '900000000', NULL, 'DAC', 'quote_sent', '2026-11-01')",
+    )
+    .execute(&old)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO settings VALUES ('theme', 'dark')")
+        .execute(&old)
+        .await
+        .unwrap();
+    old.close().await;
+
+    let upgraded = SqliteLeads::open(&database.path()).await.unwrap();
+
+    let leads = upgraded.list().await.unwrap();
+    assert_eq!(leads[0].name(), "Antiguo");
+    assert_eq!(leads[0].owner(), None);
+    assert_eq!(upgraded.load().await.unwrap().theme, ThemePreference::Dark);
+}
+
+#[tokio::test]
+async fn restores_a_backup_and_keeps_a_safety_copy() {
+    let database = TempDatabase::new();
+    let store = SqliteLeads::open(&database.path()).await.unwrap();
+    let original = lead("Original", date!(2026 - 11 - 01));
+    store.save(&original).await.unwrap();
+    let backup = database.0.join("backup.db");
+    store.backup_to(&backup).await.unwrap();
+    let later = lead("Posterior", date!(2026 - 12 - 01));
+    store.save(&later).await.unwrap();
+    let safety = database.0.join("safety.db");
+
+    let restored = store
+        .restore(&database.path(), &backup, &safety)
+        .await
+        .unwrap();
+
+    assert_eq!(restored.list().await.unwrap(), vec![original.clone()]);
+    let copy = SqliteLeads::open(&safety).await.unwrap();
+    assert_eq!(copy.list().await.unwrap(), vec![original, later]);
+}
+
+#[tokio::test]
+async fn refuses_to_restore_an_invalid_file_and_keeps_current_data() {
+    let database = TempDatabase::new();
+    let store = SqliteLeads::open(&database.path()).await.unwrap();
+    let saved = lead("Actual", date!(2026 - 11 - 01));
+    store.save(&saved).await.unwrap();
+    let invalid = database.0.join("invalid.db");
+    fs::write(&invalid, "esto no es una base de datos").unwrap();
+    let safety = database.0.join("safety.db");
+
+    let failed = store.restore(&database.path(), &invalid, &safety).await;
+
+    assert!(failed.is_err());
+    assert!(!safety.exists());
+    let reopened = SqliteLeads::open(&database.path()).await.unwrap();
+    assert_eq!(reopened.list().await.unwrap(), vec![saved]);
 }

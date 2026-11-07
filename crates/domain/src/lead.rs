@@ -18,6 +18,8 @@ pub enum DomainError {
     DuplicateMember,
     #[error("El plazo debe estar entre 1 y 90 días")]
     InvalidFollowUpDays,
+    #[error("Solo puedes usar {{nombre}} y {{servicio}}")]
+    UnknownPlaceholder,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,6 +78,7 @@ pub struct NewLead {
     pub phone: String,
     pub ruc: Option<String>,
     pub service: String,
+    pub owner: Option<String>,
     pub follow_up_on: Date,
 }
 
@@ -87,6 +90,7 @@ pub struct LeadRecord {
     pub phone: String,
     pub ruc: Option<String>,
     pub service: String,
+    pub owner: Option<String>,
     pub stage: String,
     pub follow_up_on: Date,
 }
@@ -98,6 +102,7 @@ pub struct Lead {
     phone: String,
     ruc: Option<Ruc>,
     service: String,
+    owner: Option<String>,
     stage: Stage,
     follow_up_on: Date,
 }
@@ -110,6 +115,7 @@ impl Lead {
             phone: required(&input.phone, "teléfono")?,
             ruc: optional_ruc(input.ruc.as_deref())?,
             service: required(&input.service, "servicio")?,
+            owner: optional_text(input.owner.as_deref()),
             stage: Stage::InitialContact,
             follow_up_on: input.follow_up_on,
         })
@@ -124,9 +130,15 @@ impl Lead {
             phone: required(&record.phone, "teléfono").map_err(corrupt)?,
             ruc: optional_ruc(record.ruc.as_deref()).map_err(corrupt)?,
             service: required(&record.service, "servicio").map_err(corrupt)?,
+            owner: optional_text(record.owner.as_deref()),
             stage: Stage::from_code(&record.stage).ok_or(DomainError::CorruptRecord)?,
             follow_up_on: record.follow_up_on,
         })
+    }
+
+    /// Blank clears the responsible person.
+    pub fn assign(&mut self, owner: Option<&str>) {
+        self.owner = optional_text(owner);
     }
 
     pub fn advance(&mut self) -> Result<(), DomainError> {
@@ -142,9 +154,7 @@ impl Lead {
     /// Prepared chat link, or `None` when the phone cannot use WhatsApp.
     pub fn whatsapp_url(&self, template: &str) -> Option<String> {
         let number = whatsapp::whatsapp_number(&self.phone)?;
-        let message = template
-            .replace("{nombre}", &self.name)
-            .replace("{servicio}", &self.service);
+        let message = whatsapp::render_message(template, &self.name, &self.service);
 
         Some(whatsapp::chat_url(&number, &message))
     }
@@ -163,6 +173,10 @@ impl Lead {
 
     pub fn ruc(&self) -> Option<&Ruc> {
         self.ruc.as_ref()
+    }
+
+    pub fn owner(&self) -> Option<&str> {
+        self.owner.as_deref()
     }
 
     pub fn service(&self) -> &str {
@@ -184,6 +198,13 @@ fn required(value: &str, field: &'static str) -> Result<String, DomainError> {
         return Err(DomainError::MissingField(field));
     }
     Ok(value.to_owned())
+}
+
+fn optional_text(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
 }
 
 fn optional_ruc(value: Option<&str>) -> Result<Option<Ruc>, DomainError> {

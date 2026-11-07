@@ -12,4 +12,4 @@ pub use prospect::{Prospect, ProspectKind, ProspectRepository};
 pub use repository::{LeadRepository, RepositoryError};
 pub use ruc::Ruc;
 pub use settings::{Settings, SettingsRepository, ThemePreference};
-pub use whatsapp::whatsapp_number;
+pub use whatsapp::{render_message, whatsapp_number};

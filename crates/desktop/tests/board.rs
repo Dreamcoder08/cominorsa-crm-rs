@@ -15,6 +15,7 @@ fn sample(name: &str, follow_up_on: Date, advances: usize) -> Lead {
         phone: "900000000".to_owned(),
         ruc: Some("20123456786".to_owned()),
         service: "DAC".to_owned(),
+        owner: None,
         follow_up_on,
     })
     .unwrap();
@@ -59,6 +60,7 @@ fn workspace_with_whatsapp() -> Element {
             phone: "073123456".to_owned(),
             ruc: None,
             service: "DAC".to_owned(),
+            owner: None,
             follow_up_on: TODAY,
         })
         .unwrap(),
@@ -218,6 +220,7 @@ fn form(date: &str, ruc: &str) -> FormValues {
         phone: "900000000".to_owned(),
         ruc: ruc.to_owned(),
         service: "REINFO".to_owned(),
+        owner: None,
         follow_up_on: date.to_owned(),
     }
 }

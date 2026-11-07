@@ -1,4 +1,4 @@
-use cominorsa_domain::{DomainError, Lead, NewLead, Settings, whatsapp_number};
+use cominorsa_domain::{DomainError, Lead, NewLead, Settings, render_message, whatsapp_number};
 use time::macros::date;
 
 fn lead(phone: &str) -> Lead {
@@ -7,6 +7,7 @@ fn lead(phone: &str) -> Lead {
         phone: phone.to_owned(),
         ruc: None,
         service: "REINFO & DAC".to_owned(),
+        owner: None,
         follow_up_on: date!(2026 - 11 - 10),
     })
     .unwrap()
@@ -76,4 +77,26 @@ fn keeps_a_non_blank_trimmed_template() {
         Err(DomainError::MissingField("mensaje"))
     );
     assert_eq!(settings.whatsapp_template(), "Hola {nombre}");
+}
+
+#[test]
+fn rejects_templates_with_unknown_placeholders() {
+    let mut settings = Settings::default();
+
+    for invalid in ["Hola {nombe}", "Hola {", "Hola {nombre} {}"] {
+        assert_eq!(
+            settings.set_whatsapp_template(invalid),
+            Err(DomainError::UnknownPlaceholder),
+            "{invalid} must be rejected"
+        );
+    }
+    assert!(settings.whatsapp_template().contains("{nombre}"));
+}
+
+#[test]
+fn renders_the_message_preview() {
+    assert_eq!(
+        render_message("Hola {nombre}: {servicio}", "Ana", "DAC"),
+        "Hola Ana: DAC"
+    );
 }

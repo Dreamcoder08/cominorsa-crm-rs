@@ -13,17 +13,18 @@ use sqlx::{
 use time::{Date, format_description::well_known::Iso8601};
 use uuid::Uuid;
 
-const UPSERT: &str = "INSERT INTO leads (id, name, phone, ruc, service, stage, follow_up_on)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+const UPSERT: &str = "INSERT INTO leads (id, name, phone, ruc, service, stage, follow_up_on, owner)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
     ON CONFLICT (id) DO UPDATE SET
         name = excluded.name,
         phone = excluded.phone,
         ruc = excluded.ruc,
         service = excluded.service,
         stage = excluded.stage,
-        follow_up_on = excluded.follow_up_on";
+        follow_up_on = excluded.follow_up_on,
+        owner = excluded.owner";
 
-const SELECT_ALL: &str = "SELECT id, name, phone, ruc, service, stage, follow_up_on
+const SELECT_ALL: &str = "SELECT id, name, phone, ruc, service, stage, follow_up_on, owner
     FROM leads ORDER BY follow_up_on, id";
 
 const INSERT_PROSPECT: &str = "INSERT INTO prospects (kind, name, profile, concessions, hectares,
@@ -45,6 +46,8 @@ const SEARCH_PROSPECTS: &str = "SELECT kind, name, profile, concessions, hectare
 const THEME_KEY: &str = "theme";
 const FOLLOW_UP_DAYS_KEY: &str = "follow_up_days";
 const WHATSAPP_TEMPLATE_KEY: &str = "whatsapp_template";
+const BACKUP_DIRECTORY_KEY: &str = "backup_directory";
+const LAST_BACKUP_AT_KEY: &str = "last_backup_at";
 const UPSERT_SETTING: &str = "INSERT INTO settings (key, value) VALUES (?1, ?2)
     ON CONFLICT (key) DO UPDATE SET value = excluded.value";
 
@@ -89,8 +92,56 @@ impl SqliteLeads {
         Ok(())
     }
 
+    /// Replaces the database with a backup and returns the reopened store.
+    ///
+    /// The backup is validated on a working copy, so an invalid file changes
+    /// nothing. Current data is copied to `safety` before it is replaced.
+    pub async fn restore(
+        self,
+        database: &Path,
+        backup: &Path,
+        safety: &Path,
+    ) -> Result<Self, RepositoryError> {
+        let working = database.with_extension("restoring.db");
+
+        if let Err(error) = validate_backup(backup, &working).await {
+            remove_with_sidecars(&working);
+            return Err(error);
+        }
+
+        self.backup_to(safety).await?;
+        self.close().await;
+        remove_with_sidecars(database);
+        fs::rename(&working, database).map_err(failure)?;
+
+        Self::open(database).await
+    }
+
     pub async fn close(&self) {
         self.pool.close().await;
+    }
+}
+
+async fn validate_backup(backup: &Path, working: &Path) -> Result<(), RepositoryError> {
+    fs::copy(backup, working).map_err(failure)?;
+
+    let store = SqliteLeads::open(working).await?;
+    let checked = async {
+        store.list().await?;
+        store.count().await?;
+        store.load().await
+    }
+    .await;
+    store.close().await;
+
+    checked.map(|_| ())
+}
+
+fn remove_with_sidecars(path: &Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        let _ = fs::remove_file(name);
     }
 }
 
@@ -106,6 +157,7 @@ impl LeadRepository for SqliteLeads {
             .bind(lead.service())
             .bind(lead.stage().code())
             .bind(follow_up_on)
+            .bind(lead.owner())
             .execute(&self.pool)
             .await
             .map_err(failure)?;
@@ -200,6 +252,8 @@ impl SettingsRepository for SqliteLeads {
                 WHATSAPP_TEMPLATE_KEY => {
                     settings.set_whatsapp_template(&value).map_err(failure)?;
                 }
+                BACKUP_DIRECTORY_KEY => settings.set_backup_directory(&value),
+                LAST_BACKUP_AT_KEY => settings.record_backup(value.parse().map_err(failure)?),
                 _ => {}
             }
         }
@@ -227,6 +281,26 @@ impl SettingsRepository for SqliteLeads {
                 settings.whatsapp_template().to_owned(),
             ),
         ] {
+            sqlx::query(UPSERT_SETTING)
+                .bind(key)
+                .bind(value)
+                .execute(&mut *transaction)
+                .await
+                .map_err(failure)?;
+        }
+
+        let backup = [
+            (
+                BACKUP_DIRECTORY_KEY,
+                settings.backup_directory().map(str::to_owned),
+            ),
+            (
+                LAST_BACKUP_AT_KEY,
+                settings.last_backup_at().map(|at| at.to_string()),
+            ),
+        ];
+        for (key, value) in backup {
+            let Some(value) = value else { continue };
             sqlx::query(UPSERT_SETTING)
                 .bind(key)
                 .bind(value)
@@ -293,6 +367,7 @@ fn to_lead(row: &SqliteRow) -> Result<Lead, RepositoryError> {
         phone: row.try_get("phone").map_err(failure)?,
         ruc: row.try_get("ruc").map_err(failure)?,
         service: row.try_get("service").map_err(failure)?,
+        owner: row.try_get("owner").map_err(failure)?,
         stage: row.try_get("stage").map_err(failure)?,
         follow_up_on: Date::parse(&follow_up_on, &Iso8601::DATE).map_err(failure)?,
     })

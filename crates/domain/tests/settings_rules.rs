@@ -62,3 +62,16 @@ fn limits_follow_up_days_to_one_through_ninety() {
     }
     assert_eq!(settings.follow_up_days(), 90);
 }
+
+#[test]
+fn records_the_backup_folder_and_last_backup() {
+    let mut settings = Settings::default();
+    assert_eq!(settings.backup_directory(), None);
+    assert_eq!(settings.last_backup_at(), None);
+
+    settings.set_backup_directory("  /media/usb/copias  ");
+    settings.record_backup(1_800_000_000);
+
+    assert_eq!(settings.backup_directory(), Some("/media/usb/copias"));
+    assert_eq!(settings.last_backup_at(), Some(1_800_000_000));
+}

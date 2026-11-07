@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use crate::{DomainError, RepositoryError};
+use crate::{DomainError, RepositoryError, whatsapp};
 
 const DEFAULT_FOLLOW_UP_DAYS: u32 = 3;
 const DEFAULT_WHATSAPP_TEMPLATE: &str =
@@ -46,6 +46,8 @@ pub struct Settings {
     team: Vec<String>,
     follow_up_days: u32,
     whatsapp_template: String,
+    backup_directory: Option<String>,
+    last_backup_at: Option<i64>,
 }
 
 impl Default for Settings {
@@ -55,6 +57,8 @@ impl Default for Settings {
             team: Vec::new(),
             follow_up_days: DEFAULT_FOLLOW_UP_DAYS,
             whatsapp_template: DEFAULT_WHATSAPP_TEMPLATE.to_owned(),
+            backup_directory: None,
+            last_backup_at: None,
         }
     }
 }
@@ -95,6 +99,9 @@ impl Settings {
         if template.is_empty() {
             return Err(DomainError::MissingField("mensaje"));
         }
+        if !whatsapp::has_only_known_placeholders(template) {
+            return Err(DomainError::UnknownPlaceholder);
+        }
 
         self.whatsapp_template = template.to_owned();
         Ok(())
@@ -102,6 +109,24 @@ impl Settings {
 
     pub fn whatsapp_template(&self) -> &str {
         &self.whatsapp_template
+    }
+
+    pub fn set_backup_directory(&mut self, directory: &str) {
+        let directory = directory.trim();
+        self.backup_directory = (!directory.is_empty()).then(|| directory.to_owned());
+    }
+
+    pub fn backup_directory(&self) -> Option<&str> {
+        self.backup_directory.as_deref()
+    }
+
+    /// Stores when the last backup finished, in Unix seconds.
+    pub fn record_backup(&mut self, unix_seconds: i64) {
+        self.last_backup_at = Some(unix_seconds);
+    }
+
+    pub fn last_backup_at(&self) -> Option<i64> {
+        self.last_backup_at
     }
 
     pub fn team(&self) -> &[String] {

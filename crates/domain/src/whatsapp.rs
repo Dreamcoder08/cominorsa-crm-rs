@@ -28,6 +28,17 @@ pub fn whatsapp_number(phone: &str) -> Option<String> {
         .map(|_| digits.clone())
 }
 
+pub fn render_message(template: &str, name: &str, service: &str) -> String {
+    template
+        .replace("{nombre}", name)
+        .replace("{servicio}", service)
+}
+
+pub(crate) fn has_only_known_placeholders(template: &str) -> bool {
+    let without_known = render_message(template, "", "");
+    !without_known.contains('{') && !without_known.contains('}')
+}
+
 pub(crate) fn chat_url(number: &str, message: &str) -> String {
     format!("https://wa.me/{number}?text={}", encode(message))
 }
