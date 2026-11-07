@@ -20,6 +20,8 @@ pub enum DomainError {
     InvalidFollowUpDays,
     #[error("Solo puedes usar {{nombre}} y {{servicio}}")]
     UnknownPlaceholder,
+    #[error("El expediente se abre al firmar el contrato")]
+    ContractNotSigned,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -192,7 +194,7 @@ impl Lead {
     }
 }
 
-fn required(value: &str, field: &'static str) -> Result<String, DomainError> {
+pub(crate) fn required(value: &str, field: &'static str) -> Result<String, DomainError> {
     let value = value.trim();
     if value.is_empty() {
         return Err(DomainError::MissingField(field));
@@ -200,14 +202,14 @@ fn required(value: &str, field: &'static str) -> Result<String, DomainError> {
     Ok(value.to_owned())
 }
 
-fn optional_text(value: Option<&str>) -> Option<String> {
+pub(crate) fn optional_text(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
 }
 
-fn optional_ruc(value: Option<&str>) -> Result<Option<Ruc>, DomainError> {
+pub(crate) fn optional_ruc(value: Option<&str>) -> Result<Option<Ruc>, DomainError> {
     match value.map(str::trim) {
         None | Some("") => Ok(None),
         Some(value) => Ruc::parse(value).map(Some),

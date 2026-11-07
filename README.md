@@ -68,6 +68,7 @@ Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adap
 |---|---|
 | RUC validation | Offline format and check digit only; it does not prove the RUC exists at SUNAT |
 | Pipeline stages and lead fields | Assumptions pending client validation |
+| Case steps | Titles and day offsets are planning suggestions pending client validation; legal deadlines are never stored in code |
 | Follow-up alerts | Visible only while the app is open |
 | Leads from the website or WhatsApp | Registered manually; there is no automatic intake |
 | Prospects | Concession titleholders without phone, RUC, or email; potential service is inferred, not verified |

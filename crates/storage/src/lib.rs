@@ -1,13 +1,14 @@
 //! SQLite adapter for the domain repository port.
 
-use std::{fs, path::Path};
+use std::{collections::HashMap, fs, path::Path};
 
 use cominorsa_domain::{
-    Lead, LeadRecord, LeadRepository, Prospect, ProspectKind, ProspectRepository, RepositoryError,
-    Settings, SettingsRepository, TaxRecord, ThemePreference,
+    Case, CaseFile, CaseRecord, CaseRepository, CaseStep, CaseStepRecord, Lead, LeadRecord,
+    LeadRepository, Prospect, ProspectKind, ProspectRepository, RepositoryError, Settings,
+    SettingsRepository, TaxRecord, ThemePreference,
 };
 use sqlx::{
-    Row, SqlitePool,
+    Row, SqliteExecutor, SqlitePool,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow},
 };
 use time::{Date, format_description::well_known::Iso8601};
@@ -26,6 +27,26 @@ const UPSERT: &str = "INSERT INTO leads (id, name, phone, ruc, service, stage, f
 
 const SELECT_ALL: &str = "SELECT id, name, phone, ruc, service, stage, follow_up_on, owner
     FROM leads ORDER BY follow_up_on, id";
+
+const INSERT_CASE: &str = "INSERT INTO cases (id, lead_id, client_name, ruc, service, owner,
+        opened_on, status)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+    ON CONFLICT (lead_id) DO NOTHING";
+
+const INSERT_CASE_STEP: &str = "INSERT INTO case_steps (id, case_id, position, title, due_on,
+        done_on)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
+
+const UPDATE_CASE_STEP: &str = "UPDATE case_steps SET due_on = ?2, done_on = ?3 WHERE id = ?1";
+
+const SELECT_OPEN_CASES: &str = "SELECT id, lead_id, client_name, ruc, service, owner, opened_on,
+        status
+    FROM cases WHERE status = 'open' ORDER BY opened_on, id";
+
+const SELECT_OPEN_CASE_STEPS: &str = "SELECT step.id, step.case_id, step.position, step.title,
+        step.due_on, step.done_on
+    FROM case_steps AS step JOIN cases AS parent ON parent.id = step.case_id
+    WHERE parent.status = 'open' ORDER BY step.case_id, step.position";
 
 const INSERT_PROSPECT: &str = "INSERT INTO prospects (kind, name, profile, concessions, hectares,
         departments, provinces, substances, concession_states, potential_service, needs_review,
@@ -165,6 +186,7 @@ async fn validate_backup(backup: &Path, working: &Path) -> Result<(), Repository
     let checked = async {
         store.list().await?;
         store.count().await?;
+        store.open_cases().await?;
         store.load().await
     }
     .await;
@@ -186,24 +208,29 @@ fn remove_with_sidecars(path: &Path) {
     remove_sidecars(path);
 }
 
+async fn upsert_lead<'e>(
+    executor: impl SqliteExecutor<'e>,
+    lead: &Lead,
+) -> Result<(), RepositoryError> {
+    sqlx::query(UPSERT)
+        .bind(lead.id().to_string())
+        .bind(lead.name())
+        .bind(lead.phone())
+        .bind(lead.ruc().map(|ruc| ruc.as_str()))
+        .bind(lead.service())
+        .bind(lead.stage().code())
+        .bind(lead.follow_up_on().to_string())
+        .bind(lead.owner())
+        .execute(executor)
+        .await
+        .map_err(failure)?;
+
+    Ok(())
+}
+
 impl LeadRepository for SqliteLeads {
     async fn save(&self, lead: &Lead) -> Result<(), RepositoryError> {
-        let follow_up_on = lead.follow_up_on().to_string();
-
-        sqlx::query(UPSERT)
-            .bind(lead.id().to_string())
-            .bind(lead.name())
-            .bind(lead.phone())
-            .bind(lead.ruc().map(|ruc| ruc.as_str()))
-            .bind(lead.service())
-            .bind(lead.stage().code())
-            .bind(follow_up_on)
-            .bind(lead.owner())
-            .execute(&self.pool)
-            .await
-            .map_err(failure)?;
-
-        Ok(())
+        upsert_lead(&self.pool, lead).await
     }
 
     async fn list(&self) -> Result<Vec<Lead>, RepositoryError> {
@@ -213,6 +240,91 @@ impl LeadRepository for SqliteLeads {
             .map_err(failure)?;
 
         rows.iter().map(to_lead).collect()
+    }
+}
+
+impl CaseRepository for SqliteLeads {
+    async fn sign_and_open(
+        &self,
+        lead: &Lead,
+        opening: &CaseFile,
+    ) -> Result<bool, RepositoryError> {
+        let mut transaction = self.pool.begin().await.map_err(failure)?;
+        upsert_lead(&mut *transaction, lead).await?;
+
+        let case = &opening.case;
+        let inserted = sqlx::query(INSERT_CASE)
+            .bind(case.id().to_string())
+            .bind(case.lead_id().to_string())
+            .bind(case.client_name())
+            .bind(case.ruc().map(|ruc| ruc.as_str()))
+            .bind(case.service())
+            .bind(case.owner())
+            .bind(case.opened_on().to_string())
+            .bind(case.status().code())
+            .execute(&mut *transaction)
+            .await
+            .map_err(failure)?;
+        let opened = inserted.rows_affected() == 1;
+
+        if opened {
+            for step in &opening.steps {
+                sqlx::query(INSERT_CASE_STEP)
+                    .bind(step.id().to_string())
+                    .bind(step.case_id().to_string())
+                    .bind(i64::from(step.position()))
+                    .bind(step.title())
+                    .bind(step.due_on().to_string())
+                    .bind(step.done_on().map(|date| date.to_string()))
+                    .execute(&mut *transaction)
+                    .await
+                    .map_err(failure)?;
+            }
+        }
+
+        transaction.commit().await.map_err(failure)?;
+        Ok(opened)
+    }
+
+    async fn open_cases(&self) -> Result<Vec<CaseFile>, RepositoryError> {
+        let cases = sqlx::query(SELECT_OPEN_CASES)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(failure)?;
+        let step_rows = sqlx::query(SELECT_OPEN_CASE_STEPS)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(failure)?;
+
+        let mut steps: HashMap<Uuid, Vec<CaseStep>> = HashMap::new();
+        for row in &step_rows {
+            let step = to_case_step(row)?;
+            steps.entry(step.case_id()).or_default().push(step);
+        }
+
+        cases
+            .iter()
+            .map(|row| {
+                let case = to_case(row)?;
+                let steps = steps.remove(&case.id()).unwrap_or_default();
+                Ok(CaseFile { case, steps })
+            })
+            .collect()
+    }
+
+    async fn save_step(&self, step: &CaseStep) -> Result<(), RepositoryError> {
+        let updated = sqlx::query(UPDATE_CASE_STEP)
+            .bind(step.id().to_string())
+            .bind(step.due_on().to_string())
+            .bind(step.done_on().map(|date| date.to_string()))
+            .execute(&self.pool)
+            .await
+            .map_err(failure)?;
+
+        match updated.rows_affected() {
+            0 => Err(failure("El paso del expediente ya no existe")),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -464,6 +576,45 @@ fn to_lead(row: &SqliteRow) -> Result<Lead, RepositoryError> {
         owner: row.try_get("owner").map_err(failure)?,
         stage: row.try_get("stage").map_err(failure)?,
         follow_up_on: Date::parse(&follow_up_on, &Iso8601::DATE).map_err(failure)?,
+    })
+    .map_err(failure)
+}
+
+fn to_case(row: &SqliteRow) -> Result<Case, RepositoryError> {
+    let id: String = row.try_get("id").map_err(failure)?;
+    let lead_id: String = row.try_get("lead_id").map_err(failure)?;
+    let opened_on: String = row.try_get("opened_on").map_err(failure)?;
+
+    Case::restore(CaseRecord {
+        id: Uuid::parse_str(&id).map_err(failure)?,
+        lead_id: Uuid::parse_str(&lead_id).map_err(failure)?,
+        client_name: row.try_get("client_name").map_err(failure)?,
+        ruc: row.try_get("ruc").map_err(failure)?,
+        service: row.try_get("service").map_err(failure)?,
+        owner: row.try_get("owner").map_err(failure)?,
+        opened_on: Date::parse(&opened_on, &Iso8601::DATE).map_err(failure)?,
+        status: row.try_get("status").map_err(failure)?,
+    })
+    .map_err(failure)
+}
+
+fn to_case_step(row: &SqliteRow) -> Result<CaseStep, RepositoryError> {
+    let id: String = row.try_get("id").map_err(failure)?;
+    let case_id: String = row.try_get("case_id").map_err(failure)?;
+    let position: i64 = row.try_get("position").map_err(failure)?;
+    let due_on: String = row.try_get("due_on").map_err(failure)?;
+    let done_on: Option<String> = row.try_get("done_on").map_err(failure)?;
+
+    CaseStep::restore(CaseStepRecord {
+        id: Uuid::parse_str(&id).map_err(failure)?,
+        case_id: Uuid::parse_str(&case_id).map_err(failure)?,
+        position: u32::try_from(position).map_err(failure)?,
+        title: row.try_get("title").map_err(failure)?,
+        due_on: Date::parse(&due_on, &Iso8601::DATE).map_err(failure)?,
+        done_on: done_on
+            .map(|date| Date::parse(&date, &Iso8601::DATE))
+            .transpose()
+            .map_err(failure)?,
     })
     .map_err(failure)
 }
