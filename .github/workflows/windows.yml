@@ -18,13 +18,14 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
       - name: Build release binaries
-        run: cargo build --release --locked -p cominorsa-desktop -p cominorsa-importer
+        run: cargo build --release --locked -p cominorsa-desktop -p cominorsa-importer -p cominorsa-cli
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory dist | Out-Null
           Copy-Item target/release/cominorsa-desktop.exe dist/
           Copy-Item target/release/cominorsa-import.exe dist/
+          Copy-Item target/release/cominorsa.exe dist/
           Compress-Archive dist/* cominorsa-crm-windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:

@@ -15,7 +15,7 @@ Data is stored in the operating system's application data folder as `crm.db`. Se
 
 ## Windows
 
-The `Windows build` workflow runs the tests and publishes `cominorsa-crm-windows-x64.zip` as a workflow artifact. The package holds `cominorsa-desktop.exe` and `cominorsa-import.exe`, and never customer data.
+The `Windows build` workflow runs the tests and publishes `cominorsa-crm-windows-x64.zip` as a workflow artifact. The package holds `cominorsa-desktop.exe`, `cominorsa-import.exe`, and the `cominorsa.exe` CLI, and never customer data.
 
 Data lives in `%APPDATA%\COMINORSA\CRM\data\crm.db`.
 
