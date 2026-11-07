@@ -3,9 +3,10 @@
 use std::{collections::HashMap, fs, path::Path};
 
 use cominorsa_domain::{
-    Case, CaseFile, CaseRecord, CaseRepository, CaseStep, CaseStepRecord, Lead, LeadRecord,
-    LeadRepository, Prospect, ProspectKind, ProspectRepository, RepositoryError, Settings,
-    SettingsRepository, TaxRecord, ThemePreference,
+    BillingMilestone, BillingMilestoneRecord, BillingRepository, Case, CaseClosure, CaseFile,
+    CaseRecord, CaseRepository, CaseStep, CaseStepRecord, Lead, LeadRecord, LeadRepository, Money,
+    Prospect, ProspectKind, ProspectRepository, RepositoryError, Settings, SettingsRepository,
+    TaxRecord, ThemePreference,
 };
 use sqlx::{
     Row, SqliteExecutor, SqlitePool,
@@ -14,8 +15,9 @@ use sqlx::{
 use time::{Date, format_description::well_known::Iso8601};
 use uuid::Uuid;
 
-const UPSERT: &str = "INSERT INTO leads (id, name, phone, ruc, service, stage, follow_up_on, owner)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+const UPSERT: &str = "INSERT INTO leads (id, name, phone, ruc, service, stage, follow_up_on, owner,
+        renewal_of_case)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
     ON CONFLICT (id) DO UPDATE SET
         name = excluded.name,
         phone = excluded.phone,
@@ -23,9 +25,11 @@ const UPSERT: &str = "INSERT INTO leads (id, name, phone, ruc, service, stage, f
         service = excluded.service,
         stage = excluded.stage,
         follow_up_on = excluded.follow_up_on,
-        owner = excluded.owner";
+        owner = excluded.owner,
+        renewal_of_case = excluded.renewal_of_case";
 
-const SELECT_ALL: &str = "SELECT id, name, phone, ruc, service, stage, follow_up_on, owner
+const SELECT_ALL: &str = "SELECT id, name, phone, ruc, service, stage, follow_up_on, owner,
+        renewal_of_case
     FROM leads ORDER BY follow_up_on, id";
 
 const INSERT_CASE: &str = "INSERT INTO cases (id, lead_id, client_name, ruc, service, owner,
@@ -40,13 +44,41 @@ const INSERT_CASE_STEP: &str = "INSERT INTO case_steps (id, case_id, position, t
 const UPDATE_CASE_STEP: &str = "UPDATE case_steps SET due_on = ?2, done_on = ?3 WHERE id = ?1";
 
 const SELECT_OPEN_CASES: &str = "SELECT id, lead_id, client_name, ruc, service, owner, opened_on,
-        status
+        status, contract_total_cents
     FROM cases WHERE status = 'open' ORDER BY opened_on, id";
 
 const SELECT_OPEN_CASE_STEPS: &str = "SELECT step.id, step.case_id, step.position, step.title,
         step.due_on, step.done_on
     FROM case_steps AS step JOIN cases AS parent ON parent.id = step.case_id
     WHERE parent.status = 'open' ORDER BY step.case_id, step.position";
+
+const SELECT_ACTIVE_CASES: &str = "SELECT id, lead_id, client_name, ruc, service, owner, opened_on,
+        status, contract_total_cents
+    FROM cases
+    WHERE status = 'open' OR EXISTS (SELECT 1 FROM billing_milestones AS item
+        WHERE item.case_id = cases.id AND item.paid_on IS NULL)
+    ORDER BY opened_on, id";
+
+const SELECT_ACTIVE_CASE_STEPS: &str = "SELECT step.id, step.case_id, step.position, step.title,
+        step.due_on, step.done_on
+    FROM case_steps AS step JOIN cases AS parent ON parent.id = step.case_id
+    WHERE parent.status = 'open' OR EXISTS (SELECT 1 FROM billing_milestones AS item
+        WHERE item.case_id = parent.id AND item.paid_on IS NULL)
+    ORDER BY step.case_id, step.position";
+
+const CLOSE_CASE: &str = "UPDATE cases SET status = ?2 WHERE id = ?1 AND status = 'open'";
+
+const UPDATE_CONTRACT_TOTAL: &str = "UPDATE cases SET contract_total_cents = ?2 WHERE id = ?1";
+
+const SELECT_MILESTONES: &str = "SELECT id, case_id, position, title, amount_cents, due_on, paid_on
+    FROM billing_milestones ORDER BY case_id, position";
+
+const INSERT_MILESTONE: &str = "INSERT INTO billing_milestones (id, case_id, position, title,
+        amount_cents, due_on, paid_on)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
+
+const UPDATE_MILESTONE: &str = "UPDATE billing_milestones
+    SET title = ?2, amount_cents = ?3, due_on = ?4, paid_on = ?5 WHERE id = ?1";
 
 const INSERT_PROSPECT: &str = "INSERT INTO prospects (kind, name, profile, concessions, hectares,
         departments, provinces, substances, concession_states, potential_service, needs_review,
@@ -160,6 +192,53 @@ impl SqliteLeads {
     pub async fn close(&self) {
         self.pool.close().await;
     }
+
+    async fn load_cases(
+        &self,
+        select_cases: &'static str,
+        select_steps: &'static str,
+    ) -> Result<Vec<CaseFile>, RepositoryError> {
+        let cases = sqlx::query(select_cases)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(failure)?;
+        let step_rows = sqlx::query(select_steps)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(failure)?;
+        let milestone_rows = sqlx::query(SELECT_MILESTONES)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(failure)?;
+
+        let mut steps: HashMap<Uuid, Vec<CaseStep>> = HashMap::new();
+        for row in &step_rows {
+            let step = to_case_step(row)?;
+            steps.entry(step.case_id()).or_default().push(step);
+        }
+        let mut milestones: HashMap<Uuid, Vec<BillingMilestone>> = HashMap::new();
+        for row in &milestone_rows {
+            let milestone = to_milestone(row)?;
+            milestones
+                .entry(milestone.case_id())
+                .or_default()
+                .push(milestone);
+        }
+
+        cases
+            .iter()
+            .map(|row| {
+                let case = to_case(row)?;
+                let steps = steps.remove(&case.id()).unwrap_or_default();
+                let milestones = milestones.remove(&case.id()).unwrap_or_default();
+                Ok(CaseFile {
+                    case,
+                    steps,
+                    milestones,
+                })
+            })
+            .collect()
+    }
 }
 
 /// `open` would create the schema in any file, so the CRM tables must already
@@ -186,7 +265,7 @@ async fn validate_backup(backup: &Path, working: &Path) -> Result<(), Repository
     let checked = async {
         store.list().await?;
         store.count().await?;
-        store.open_cases().await?;
+        store.active_cases().await?;
         store.load().await
     }
     .await;
@@ -221,6 +300,7 @@ async fn upsert_lead<'e>(
         .bind(lead.stage().code())
         .bind(lead.follow_up_on().to_string())
         .bind(lead.owner())
+        .bind(lead.renewal_of().map(|case| case.to_string()))
         .execute(executor)
         .await
         .map_err(failure)?;
@@ -286,30 +366,34 @@ impl CaseRepository for SqliteLeads {
         Ok(opened)
     }
 
-    async fn open_cases(&self) -> Result<Vec<CaseFile>, RepositoryError> {
-        let cases = sqlx::query(SELECT_OPEN_CASES)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(failure)?;
-        let step_rows = sqlx::query(SELECT_OPEN_CASE_STEPS)
-            .fetch_all(&self.pool)
+    async fn close_case(&self, closure: &CaseClosure) -> Result<bool, RepositoryError> {
+        let mut transaction = self.pool.begin().await.map_err(failure)?;
+        let closed = sqlx::query(CLOSE_CASE)
+            .bind(closure.case.id().to_string())
+            .bind(closure.case.status().code())
+            .execute(&mut *transaction)
             .await
             .map_err(failure)?;
 
-        let mut steps: HashMap<Uuid, Vec<CaseStep>> = HashMap::new();
-        for row in &step_rows {
-            let step = to_case_step(row)?;
-            steps.entry(step.case_id()).or_default().push(step);
+        if closed.rows_affected() == 0 {
+            return Ok(false);
+        }
+        if let Some(renewal) = &closure.renewal {
+            upsert_lead(&mut *transaction, renewal).await?;
         }
 
-        cases
-            .iter()
-            .map(|row| {
-                let case = to_case(row)?;
-                let steps = steps.remove(&case.id()).unwrap_or_default();
-                Ok(CaseFile { case, steps })
-            })
-            .collect()
+        transaction.commit().await.map_err(failure)?;
+        Ok(true)
+    }
+
+    async fn open_cases(&self) -> Result<Vec<CaseFile>, RepositoryError> {
+        self.load_cases(SELECT_OPEN_CASES, SELECT_OPEN_CASE_STEPS)
+            .await
+    }
+
+    async fn active_cases(&self) -> Result<Vec<CaseFile>, RepositoryError> {
+        self.load_cases(SELECT_ACTIVE_CASES, SELECT_ACTIVE_CASE_STEPS)
+            .await
     }
 
     async fn save_step(&self, step: &CaseStep) -> Result<(), RepositoryError> {
@@ -323,6 +407,76 @@ impl CaseRepository for SqliteLeads {
 
         match updated.rows_affected() {
             0 => Err(failure("El paso del expediente ya no existe")),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl BillingRepository for SqliteLeads {
+    async fn save_contract_total(
+        &self,
+        case_id: Uuid,
+        total: Money,
+    ) -> Result<(), RepositoryError> {
+        let updated = sqlx::query(UPDATE_CONTRACT_TOTAL)
+            .bind(case_id.to_string())
+            .bind(total.cents())
+            .execute(&self.pool)
+            .await
+            .map_err(failure)?;
+
+        match updated.rows_affected() {
+            0 => Err(failure("El expediente ya no existe")),
+            _ => Ok(()),
+        }
+    }
+
+    async fn add_milestones(&self, milestones: &[BillingMilestone]) -> Result<(), RepositoryError> {
+        let mut transaction = self.pool.begin().await.map_err(failure)?;
+
+        for milestone in milestones {
+            sqlx::query(INSERT_MILESTONE)
+                .bind(milestone.id().to_string())
+                .bind(milestone.case_id().to_string())
+                .bind(i64::from(milestone.position()))
+                .bind(milestone.title())
+                .bind(milestone.amount().cents())
+                .bind(milestone.due_on().to_string())
+                .bind(milestone.paid_on().map(|date| date.to_string()))
+                .execute(&mut *transaction)
+                .await
+                .map_err(failure)?;
+        }
+
+        transaction.commit().await.map_err(failure)
+    }
+
+    async fn save_milestone(&self, milestone: &BillingMilestone) -> Result<(), RepositoryError> {
+        let updated = sqlx::query(UPDATE_MILESTONE)
+            .bind(milestone.id().to_string())
+            .bind(milestone.title())
+            .bind(milestone.amount().cents())
+            .bind(milestone.due_on().to_string())
+            .bind(milestone.paid_on().map(|date| date.to_string()))
+            .execute(&self.pool)
+            .await
+            .map_err(failure)?;
+
+        match updated.rows_affected() {
+            0 => Err(failure("El hito de cobro ya no existe")),
+            _ => Ok(()),
+        }
+    }
+
+    async fn delete_milestone(&self, id: Uuid) -> Result<(), RepositoryError> {
+        let deleted = sqlx::query("DELETE FROM billing_milestones WHERE id = ?1")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(failure)?;
+
+        match deleted.rows_affected() {
+            0 => Err(failure("El hito de cobro ya no existe")),
             _ => Ok(()),
         }
     }
@@ -566,6 +720,7 @@ fn to_tax_record(row: &SqliteRow) -> Result<Option<TaxRecord>, RepositoryError> 
 fn to_lead(row: &SqliteRow) -> Result<Lead, RepositoryError> {
     let id: String = row.try_get("id").map_err(failure)?;
     let follow_up_on: String = row.try_get("follow_up_on").map_err(failure)?;
+    let renewal_of: Option<String> = row.try_get("renewal_of_case").map_err(failure)?;
 
     Lead::restore(LeadRecord {
         id: Uuid::parse_str(&id).map_err(failure)?,
@@ -576,6 +731,10 @@ fn to_lead(row: &SqliteRow) -> Result<Lead, RepositoryError> {
         owner: row.try_get("owner").map_err(failure)?,
         stage: row.try_get("stage").map_err(failure)?,
         follow_up_on: Date::parse(&follow_up_on, &Iso8601::DATE).map_err(failure)?,
+        renewal_of: renewal_of
+            .map(|case| Uuid::parse_str(&case))
+            .transpose()
+            .map_err(failure)?,
     })
     .map_err(failure)
 }
@@ -594,6 +753,7 @@ fn to_case(row: &SqliteRow) -> Result<Case, RepositoryError> {
         owner: row.try_get("owner").map_err(failure)?,
         opened_on: Date::parse(&opened_on, &Iso8601::DATE).map_err(failure)?,
         status: row.try_get("status").map_err(failure)?,
+        contract_total_cents: row.try_get("contract_total_cents").map_err(failure)?,
     })
     .map_err(failure)
 }
@@ -612,6 +772,28 @@ fn to_case_step(row: &SqliteRow) -> Result<CaseStep, RepositoryError> {
         title: row.try_get("title").map_err(failure)?,
         due_on: Date::parse(&due_on, &Iso8601::DATE).map_err(failure)?,
         done_on: done_on
+            .map(|date| Date::parse(&date, &Iso8601::DATE))
+            .transpose()
+            .map_err(failure)?,
+    })
+    .map_err(failure)
+}
+
+fn to_milestone(row: &SqliteRow) -> Result<BillingMilestone, RepositoryError> {
+    let id: String = row.try_get("id").map_err(failure)?;
+    let case_id: String = row.try_get("case_id").map_err(failure)?;
+    let position: i64 = row.try_get("position").map_err(failure)?;
+    let due_on: String = row.try_get("due_on").map_err(failure)?;
+    let paid_on: Option<String> = row.try_get("paid_on").map_err(failure)?;
+
+    BillingMilestone::restore(BillingMilestoneRecord {
+        id: Uuid::parse_str(&id).map_err(failure)?,
+        case_id: Uuid::parse_str(&case_id).map_err(failure)?,
+        position: u32::try_from(position).map_err(failure)?,
+        title: row.try_get("title").map_err(failure)?,
+        amount_cents: row.try_get("amount_cents").map_err(failure)?,
+        due_on: Date::parse(&due_on, &Iso8601::DATE).map_err(failure)?,
+        paid_on: paid_on
             .map(|date| Date::parse(&date, &Iso8601::DATE))
             .transpose()
             .map_err(failure)?,

@@ -1,6 +1,6 @@
 use cominorsa_domain::{
-    Case, CaseFile, CaseRecord, CaseStatus, CaseStep, CaseStepRecord, DomainError, Lead, NewLead,
-    Ruc, procedure_template,
+    Case, CaseClosure, CaseFile, CaseRecord, CaseStatus, CaseStep, CaseStepRecord, DomainError,
+    Lead, LeadRecord, Money, NewLead, Ruc, Stage, procedure_template, renewal_date,
 };
 use time::{Date, Duration, macros::date};
 use uuid::Uuid;
@@ -44,6 +44,7 @@ fn case_record(status: &str) -> CaseRecord {
         owner: None,
         opened_on: SIGNED_ON,
         status: status.to_owned(),
+        contract_total_cents: None,
     }
 }
 
@@ -115,6 +116,59 @@ fn falls_back_to_the_generic_template_without_matching_inside_words() {
     for service in ["Asesoría", "Redacción de contrato", ""] {
         assert_eq!(procedure_template(service).name, "General", "{service}");
     }
+}
+
+#[test]
+fn combines_every_named_service_in_the_order_of_the_text() {
+    let template = procedure_template("IGAFOM + REINFO");
+    let igafom = procedure_template("IGAFOM");
+    let reinfo = procedure_template("REINFO");
+
+    assert_eq!(template.name, "IGAFOM + REINFO");
+    assert_eq!(template.steps[..igafom.steps.len()], igafom.steps[..]);
+    assert_eq!(template.steps[igafom.steps.len()..], reinfo.steps[1..]);
+    assert_eq!(
+        procedure_template("reinfo y plan de minado").name,
+        "REINFO + Plan de minado"
+    );
+}
+
+#[test]
+fn never_repeats_an_identical_step_title_when_combining() {
+    let template = procedure_template("IGAFOM, REINFO y DAC");
+    let mut titles: Vec<&str> = template.steps.iter().map(|step| step.title).collect();
+    let total = titles.len();
+
+    titles.sort_unstable();
+    titles.dedup();
+
+    assert_eq!(titles.len(), total);
+    assert_eq!(
+        procedure_template("DAC y DAC").steps,
+        procedure_template("DAC").steps
+    );
+}
+
+#[test]
+fn combining_keeps_whole_word_matching() {
+    assert_eq!(procedure_template("Redacción + REINFO").name, "REINFO");
+    assert_eq!(procedure_template("plan de trabajo").name, "General");
+}
+
+#[test]
+fn a_combined_case_opens_one_step_per_combined_entry() {
+    let signed = lead("IGAFOM + REINFO", 3);
+    let template = procedure_template(signed.service());
+
+    let opened = CaseFile::open(&signed, SIGNED_ON, &template).unwrap();
+
+    assert_eq!(opened.steps.len(), 8);
+    assert_eq!(
+        opened.steps[5].title(),
+        "Revisar la situación en el registro"
+    );
+    assert_eq!(opened.steps[5].position(), 6);
+    assert_eq!(opened.steps[5].due_on(), SIGNED_ON + Duration::days(7));
 }
 
 #[test]
@@ -199,4 +253,140 @@ fn refuses_corrupt_case_and_step_records() {
     assert_eq!(blank_client, Err(DomainError::CorruptRecord));
     assert_eq!(invalid_ruc, Err(DomainError::CorruptRecord));
     assert_eq!(blank_title, Err(DomainError::CorruptRecord));
+}
+
+#[test]
+fn only_dac_suggests_a_renewal_interval() {
+    assert_eq!(procedure_template("DAC").renewal_months, Some(12));
+    for service in ["REINFO", "IGAFOM", "ESTAMIN", "Plan de minado", "Asesoría"] {
+        assert_eq!(
+            procedure_template(service).renewal_months,
+            None,
+            "{service}"
+        );
+    }
+}
+
+#[test]
+fn a_service_recurs_when_any_of_its_named_procedures_does() {
+    assert_eq!(procedure_template("IGAFOM + DAC").renewal_months, Some(12));
+    assert_eq!(procedure_template("IGAFOM + REINFO").renewal_months, None);
+}
+
+#[test]
+fn suggests_a_renewal_date_interval_months_after_closing() {
+    assert_eq!(
+        renewal_date("DAC", date!(2026 - 11 - 07)),
+        Some(date!(2027 - 11 - 07))
+    );
+    assert_eq!(
+        renewal_date("DAC", date!(2028 - 02 - 29)),
+        Some(date!(2029 - 02 - 28))
+    );
+    assert_eq!(renewal_date("REINFO", date!(2026 - 11 - 07)), None);
+}
+
+fn restored_lead(name: &str, renewal_of: Option<Uuid>) -> Lead {
+    Lead::restore(LeadRecord {
+        id: Uuid::now_v7(),
+        name: name.to_owned(),
+        phone: "900000000".to_owned(),
+        ruc: None,
+        service: "DAC".to_owned(),
+        owner: None,
+        stage: "initial_contact".to_owned(),
+        follow_up_on: SIGNED_ON,
+        renewal_of,
+    })
+    .unwrap()
+}
+
+#[test]
+fn closing_a_recurring_case_builds_a_renewal_lead_from_the_case_and_its_lead() {
+    let signed = lead("DAC", 3);
+    let file = CaseFile::open(&signed, SIGNED_ON, &procedure_template("DAC")).unwrap();
+    let closed_on = date!(2026 - 12 - 15);
+
+    let closure = CaseClosure::of(file.case.clone(), &signed, closed_on);
+
+    assert_eq!(closure.case.status(), CaseStatus::Closed);
+    assert_eq!(closure.case.id(), file.case.id());
+    let renewal = closure.renewal.unwrap();
+    assert_ne!(renewal.id(), signed.id());
+    assert_eq!(renewal.name(), "Renovación: Minera Ejemplo");
+    assert_eq!(renewal.client_name(), "Minera Ejemplo");
+    assert_eq!(renewal.phone(), "900000000");
+    assert_eq!(renewal.ruc().map(Ruc::as_str), Some("20123456786"));
+    assert_eq!(renewal.owner(), Some("Ana"));
+    assert_eq!(renewal.service(), "DAC");
+    assert_eq!(renewal.stage(), Stage::InitialContact);
+    assert_eq!(renewal.follow_up_on(), date!(2027 - 12 - 15));
+    assert_eq!(renewal.renewal_of(), Some(file.case.id()));
+}
+
+#[test]
+fn closing_a_case_that_does_not_recur_builds_no_lead() {
+    let signed = lead("REINFO", 3);
+    let file = CaseFile::open(&signed, SIGNED_ON, &procedure_template("REINFO")).unwrap();
+
+    let closure = CaseClosure::of(file.case, &signed, SIGNED_ON);
+
+    assert_eq!(closure.case.status(), CaseStatus::Closed);
+    assert_eq!(closure.renewal, None);
+}
+
+#[test]
+fn a_second_renewal_does_not_stack_the_label() {
+    let mut renewal = restored_lead("Renovación: Minera Ejemplo", Some(Uuid::now_v7()));
+    renewal.advance().unwrap();
+    renewal.advance().unwrap();
+    renewal.advance().unwrap();
+
+    let file = CaseFile::open(&renewal, SIGNED_ON, &procedure_template("DAC")).unwrap();
+    assert_eq!(file.case.client_name(), "Minera Ejemplo");
+
+    let next = CaseClosure::of(file.case, &renewal, SIGNED_ON).renewal;
+    assert_eq!(next.unwrap().name(), "Renovación: Minera Ejemplo");
+}
+
+#[test]
+fn a_prepared_message_greets_the_client_not_the_renewal_label() {
+    let renewal = restored_lead("Renovación: Minera Ejemplo", Some(Uuid::now_v7()));
+
+    let url = renewal.whatsapp_url("Hola {nombre}").unwrap();
+
+    assert!(url.ends_with("Hola%20Minera%20Ejemplo"), "{url}");
+}
+
+#[test]
+fn only_a_renewal_loses_the_label_prefix() {
+    let plain = restored_lead("Renovación: Calle 1 SAC", None);
+
+    assert_eq!(plain.client_name(), "Renovación: Calle 1 SAC");
+    assert_eq!(plain.renewal_of(), None);
+}
+
+#[test]
+fn a_contract_total_must_be_positive_and_survives_restore() {
+    let mut case = Case::restore(CaseRecord {
+        contract_total_cents: Some(123_450),
+        ..case_record("open")
+    })
+    .unwrap();
+
+    assert_eq!(case.contract_total().map(Money::cents), Some(123_450));
+    assert_eq!(
+        case.set_contract_total(Money::default()),
+        Err(DomainError::InvalidAmount)
+    );
+    case.set_contract_total(Money::from_cents(500).unwrap())
+        .unwrap();
+    assert_eq!(case.contract_total().map(Money::cents), Some(500));
+    for cents in [0, -1] {
+        let corrupt = Case::restore(CaseRecord {
+            contract_total_cents: Some(cents),
+            ..case_record("open")
+        });
+        assert_eq!(corrupt, Err(DomainError::CorruptRecord));
+    }
 }

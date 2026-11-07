@@ -109,9 +109,11 @@ fn leaves_done_steps_and_closed_cases_out_of_the_agenda() {
             owner: None,
             opened_on: TODAY,
             status: "closed".to_owned(),
+            contract_total_cents: None,
         })
         .unwrap(),
         steps: open.steps,
+        milestones: Vec::new(),
     };
 
     let groups = AgendaGroups::of(&[], &[done, closed], TODAY);

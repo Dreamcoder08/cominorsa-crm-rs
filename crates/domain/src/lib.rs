@@ -1,5 +1,6 @@
 //! Business rules for the COMINORSA CRM. Free of I/O and UI concerns.
 
+mod billing;
 mod case;
 mod lead;
 mod prospect;
@@ -8,9 +9,13 @@ mod ruc;
 mod settings;
 mod whatsapp;
 
+pub use billing::{
+    BillingMilestone, BillingMilestoneRecord, BillingRepository, BillingSummary, Money,
+    NewMilestone,
+};
 pub use case::{
-    Case, CaseFile, CaseRecord, CaseRepository, CaseStatus, CaseStep, CaseStepRecord,
-    ProcedureTemplate, TemplateStep, procedure_template,
+    Case, CaseClosure, CaseFile, CaseRecord, CaseRepository, CaseStatus, CaseStep, CaseStepRecord,
+    ProcedureTemplate, TemplateStep, procedure_template, renewal_date,
 };
 pub use lead::{DomainError, Lead, LeadRecord, NewLead, Stage};
 pub use prospect::{Prospect, ProspectKind, ProspectRepository, TaxRecord};

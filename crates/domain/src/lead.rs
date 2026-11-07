@@ -2,7 +2,9 @@ use thiserror::Error;
 use time::Date;
 use uuid::Uuid;
 
-use crate::{Ruc, whatsapp};
+use crate::{Case, Ruc, whatsapp};
+
+const RENEWAL_PREFIX: &str = "Renovación: ";
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum DomainError {
@@ -22,6 +24,12 @@ pub enum DomainError {
     UnknownPlaceholder,
     #[error("El expediente se abre al firmar el contrato")]
     ContractNotSigned,
+    #[error("Ingresa un monto mayor que cero, por ejemplo 1,234.50")]
+    InvalidAmount,
+    #[error("Ingresa primero el total del contrato")]
+    MissingContractTotal,
+    #[error("El plan sugerido solo se aplica a un expediente sin hitos")]
+    MilestonesAlreadyPlanned,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +103,7 @@ pub struct LeadRecord {
     pub owner: Option<String>,
     pub stage: String,
     pub follow_up_on: Date,
+    pub renewal_of: Option<Uuid>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,6 +116,7 @@ pub struct Lead {
     owner: Option<String>,
     stage: Stage,
     follow_up_on: Date,
+    renewal_of: Option<Uuid>,
 }
 
 impl Lead {
@@ -120,7 +130,23 @@ impl Lead {
             owner: optional_text(input.owner.as_deref()),
             stage: Stage::InitialContact,
             follow_up_on: input.follow_up_on,
+            renewal_of: None,
         })
+    }
+
+    /// A new sales opportunity for the client of a closed case.
+    pub(crate) fn renewal(case: &Case, phone: &str, follow_up_on: Date) -> Self {
+        Self {
+            id: Uuid::now_v7(),
+            name: format!("{RENEWAL_PREFIX}{}", case.client_name()),
+            phone: phone.to_owned(),
+            ruc: case.ruc().cloned(),
+            service: case.service().to_owned(),
+            owner: case.owner().map(str::to_owned),
+            stage: Stage::InitialContact,
+            follow_up_on,
+            renewal_of: Some(case.id()),
+        }
     }
 
     pub fn restore(record: LeadRecord) -> Result<Self, DomainError> {
@@ -135,6 +161,7 @@ impl Lead {
             owner: optional_text(record.owner.as_deref()),
             stage: Stage::from_code(&record.stage).ok_or(DomainError::CorruptRecord)?,
             follow_up_on: record.follow_up_on,
+            renewal_of: record.renewal_of,
         })
     }
 
@@ -156,7 +183,7 @@ impl Lead {
     /// Prepared chat link, or `None` when the phone cannot use WhatsApp.
     pub fn whatsapp_url(&self, template: &str) -> Option<String> {
         let number = whatsapp::whatsapp_number(&self.phone)?;
-        let message = whatsapp::render_message(template, &self.name, &self.service);
+        let message = whatsapp::render_message(template, self.client_name(), &self.service);
 
         Some(whatsapp::chat_url(&number, &message))
     }
@@ -167,6 +194,19 @@ impl Lead {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The name without the renewal label, for what the client reads.
+    pub fn client_name(&self) -> &str {
+        match self.renewal_of {
+            Some(_) => self.name.strip_prefix(RENEWAL_PREFIX).unwrap_or(&self.name),
+            None => &self.name,
+        }
+    }
+
+    /// The closed case this lead renews; a renewal is an existing client.
+    pub fn renewal_of(&self) -> Option<Uuid> {
+        self.renewal_of
     }
 
     pub fn phone(&self) -> &str {
