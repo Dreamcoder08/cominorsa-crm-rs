@@ -15,8 +15,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+      - name: Install test tools
+        run: choco install sqlite --no-progress -y
       - name: Test
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
       - name: Build release binaries
         run: cargo build --release --locked -p cominorsa-desktop -p cominorsa-importer -p cominorsa-cli
       - name: Package
