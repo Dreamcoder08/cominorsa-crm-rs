@@ -4,7 +4,7 @@ use cominorsa_domain::{
     CompanyProfile, IgvRate, Settings, SettingsRepository, ThemePreference, render_message,
 };
 
-use crate::error::AppError;
+use crate::{error::AppError, presentation::igv_input};
 
 const PREVIEW_NAME: &str = "Minera Ejemplo";
 const PREVIEW_SERVICE: &str = "REINFO";
@@ -45,6 +45,37 @@ pub struct SettingsChange {
 }
 
 impl SettingsChange {
+    /// What changed between two states, for an editor that holds whole settings.
+    pub fn between(before: &Settings, after: &Settings) -> Self {
+        let changed = |old: &str, new: &str| (old != new).then(|| new.to_owned());
+        let missing_from = |team: &[String], others: &[String]| -> Vec<String> {
+            team.iter()
+                .filter(|name| !others.contains(name))
+                .cloned()
+                .collect()
+        };
+        let (old, new) = (before.company(), after.company());
+
+        Self {
+            theme: changed(before.theme.code(), after.theme.code()),
+            follow_up_days: (before.follow_up_days() != after.follow_up_days())
+                .then(|| after.follow_up_days()),
+            whatsapp_template: changed(before.whatsapp_template(), after.whatsapp_template()),
+            igv: (before.igv_rate() != after.igv_rate()).then(|| igv_input(after.igv_rate())),
+            backup_directory: changed(
+                before.backup_directory().unwrap_or_default(),
+                after.backup_directory().unwrap_or_default(),
+            ),
+            company_name: changed(&old.name, &new.name),
+            company_ruc: changed(&old.ruc, &new.ruc),
+            company_address: changed(&old.address, &new.address),
+            company_phone: changed(&old.phone, &new.phone),
+            company_email: changed(&old.email, &new.email),
+            add_members: missing_from(after.team(), before.team()),
+            remove_members: missing_from(before.team(), after.team()),
+        }
+    }
+
     fn company(&self, current: &CompanyProfile) -> Option<CompanyProfile> {
         let fields = [
             &self.company_name,

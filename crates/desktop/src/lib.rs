@@ -24,16 +24,18 @@ use uuid::Uuid;
 pub use billing_view::BillingPanel;
 pub use cases_view::{CaseDetail, Cases, CloseStep};
 pub use cominorsa_application::{
-    AgendaGroups, AgendaItem, BillingChange, BillingEdit, Clock, FollowUp, FormValues,
-    MilestoneValues, PROSPECT_PAGE_SIZE, PipelineSummary, QUOTE_TAX_NOTE, QuoteChange, QuoteEdit,
-    QuoteLineValues, QuoteValues, accepted_notice, billing_change, case_progress, close_warning,
+    AgendaGroups, AgendaItem, AppError, BillingChange, BillingEdit, Clock, Context, FollowUp,
+    FormValues, MilestoneValues, PROSPECT_PAGE_SIZE, PdfTarget, PipelineSummary, QUOTE_TAX_NOTE,
+    QuoteChange, QuoteEdit, QuoteLineValues, QuoteValues, SettingsChange, accepted_notice,
+    add_lead, apply_billing, assign_lead, billing_change, case_progress, close_warning,
     closed_case_label, closing_notice, company_lines, company_warning, create_backup, format_date,
     format_igv_rate, format_soles, format_timestamp, igv_input, igv_label, lead_quotes,
     matches_query, milestone_gap_warning, milestone_status_label, money_input, next_follow_up,
     owner_options, parse_form, parse_step_date, preview_message, profile_label, quote_change,
-    quote_file_name, quote_notice, quote_pdf, quote_preview, renewal_note, responsible_label,
-    restore_backup, save_advance, save_billing, save_close, save_quote, step_status_label,
-    suggested_total_note, today_in_peru, toggled_step, write_pdf,
+    quote_file_name, quote_notice, quote_pdf, quote_preview, renewal_note, reschedule_step,
+    responsible_label, restore_backup, run_backup, save_advance, save_billing, save_close,
+    save_quote, save_quote_edit, save_quote_pdf, send_quote, set_step_done, step_status_label,
+    suggested_total_note, today_in_peru, toggled_step, update_settings, write_pdf,
 };
 pub use presentation::{quote_status_class, tax_status_class};
 pub use quote_view::QuotePanel;
@@ -91,6 +93,12 @@ async fn open_store() -> Result<SqliteLeads, String> {
     SqliteLeads::open(&path)
         .await
         .map_err(|error| error.to_string())
+}
+
+/// What a person changed on one case step.
+enum StepChange {
+    Done(bool),
+    Due(String),
 }
 
 #[component]
@@ -183,29 +191,52 @@ pub fn App() -> Element {
         }
     });
 
-    let mut persist = move |lead: Lead, from_form: bool| {
+    let mut add_from_form = move || {
         let Some(repository) = store.read().clone() else {
             form_error.set("La base de datos todavía no está lista".to_owned());
             return;
         };
+        let values = form();
 
         saving.set(true);
         spawn(async move {
             let saved = async {
-                repository.save(&lead).await?;
-                repository.list().await
+                add_lead(&repository, values, &mut Context::system()).await?;
+                Ok::<_, AppError>(repository.list().await?)
             };
 
             match saved.await {
                 Ok(list) => {
                     leads.set(list);
                     form_error.set(String::new());
-                    if from_form {
-                        form.set(new_form());
-                        panel_open.set(false);
-                    }
+                    form.set(new_form());
+                    panel_open.set(false);
                 }
                 Err(failure) => form_error.set(failure.to_string()),
+            }
+            saving.set(false);
+        });
+    };
+
+    let mut assign = move |id: Uuid, owner: String| {
+        let Some(repository) = store.read().clone() else {
+            action_error.set("La base de datos todavía no está lista".to_owned());
+            return;
+        };
+
+        saving.set(true);
+        spawn(async move {
+            let saved = async {
+                assign_lead(&repository, id, &owner).await?;
+                Ok::<_, AppError>(repository.list().await?)
+            };
+
+            match saved.await {
+                Ok(list) => {
+                    leads.set(list);
+                    action_error.set(String::new());
+                }
+                Err(failure) => action_error.set(failure.to_string()),
             }
             saving.set(false);
         });
@@ -243,7 +274,7 @@ pub fn App() -> Element {
         });
     };
 
-    let mut save_step = move |step: CaseStep| {
+    let mut save_step = move |id: Uuid, change: StepChange| {
         let Some(repository) = store.read().clone() else {
             action_error.set("La base de datos todavía no está lista".to_owned());
             return;
@@ -252,8 +283,15 @@ pub fn App() -> Element {
         saving.set(true);
         spawn(async move {
             let saved = async {
-                repository.save_step(&step).await?;
-                repository.active_cases().await
+                match change {
+                    StepChange::Done(done) => {
+                        set_step_done(&repository, id, done, today_in_peru()).await?;
+                    }
+                    StepChange::Due(value) => {
+                        reschedule_step(&repository, id, &value).await?;
+                    }
+                }
+                Ok::<_, AppError>(repository.active_cases().await?)
             };
 
             match saved.await {
@@ -273,24 +311,13 @@ pub fn App() -> Element {
             return;
         };
         let clears_draft = edit == BillingEdit::Add;
-        let change = match billing_change(&file, edit, &milestone_draft.read(), today_in_peru()) {
-            Ok(change) => change,
-            Err(message) => {
-                action_error.set(message.to_string());
-                return;
-            }
-        };
+        let draft = milestone_draft.read().clone();
 
         saving.set(true);
         spawn(async move {
             let saved = async {
-                save_billing(&repository, change)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                repository
-                    .active_cases()
-                    .await
-                    .map_err(|error| error.to_string())
+                apply_billing(&repository, &file, edit, &draft, &mut Context::system()).await?;
+                Ok::<_, AppError>(repository.active_cases().await?)
             };
 
             match saved.await {
@@ -301,7 +328,7 @@ pub fn App() -> Element {
                         milestone_draft.set(MilestoneValues::starting_on(today_in_peru()));
                     }
                 }
-                Err(failure) => action_error.set(failure),
+                Err(failure) => action_error.set(failure.to_string()),
             }
             saving.set(false);
         });
@@ -341,68 +368,59 @@ pub fn App() -> Element {
         });
     };
 
-    let mut save_quote_edit = move |lead: Lead, edit: QuoteEdit| {
+    let mut run_quote_edit = move |lead: Lead, edit: QuoteEdit| {
         let Some(repository) = store.read().clone() else {
             quote_error.set("La base de datos todavía no está lista".to_owned());
             return;
         };
-        let change = quote_change(
-            &lead,
-            edit.clone(),
-            &quote_values.read(),
-            &quotes.read(),
-            &settings.read(),
-            today_in_peru(),
-        );
-        let change = match change {
-            Ok(change) => change,
-            Err(message) => {
-                quote_error.set(message.to_string());
-                return;
-            }
-        };
-        let case_is_open = cases
-            .read()
-            .iter()
-            .any(|file| file.case.lead_id() == lead.id());
+        let values = quote_values.read().clone();
 
         saving.set(true);
         spawn(async move {
             let saved = async {
-                let quote = save_quote(&repository, change)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                let list = repository
-                    .quotes()
-                    .await
-                    .map_err(|error| error.to_string())?;
-                Ok::<_, String>((quote, list))
+                let saved = match edit.clone() {
+                    // The panel already asked about a blank company name.
+                    QuoteEdit::Send(quote) => {
+                        send_quote(&repository, &lead, quote, true, today_in_peru()).await?
+                    }
+                    edit => {
+                        save_quote_edit(&repository, &lead, edit, &values, &mut Context::system())
+                            .await?
+                    }
+                };
+                let list = repository.quotes().await?;
+                Ok::<_, AppError>((saved, list))
             };
 
             match saved.await {
-                Ok((quote, list)) => {
+                Ok((saved, list)) => {
                     quotes.set(list);
                     quote_error.set(String::new());
-                    quote_notice_text.set(quote_notice(&edit, &quote, case_is_open));
+                    quote_notice_text.set(saved.notice);
                     confirming_send.set(None);
                     match edit {
                         QuoteEdit::Save => {
                             quote_values.set(QuoteValues::starting_on(today_in_peru()));
                         }
-                        QuoteEdit::NewVersion(_) => quote_values.set(QuoteValues::of_quote(&quote)),
+                        QuoteEdit::NewVersion(_) => {
+                            quote_values.set(QuoteValues::of_quote(&saved.quote));
+                        }
                         _ => {}
                     }
                 }
-                Err(failure) => quote_error.set(failure),
+                Err(failure) => quote_error.set(failure.to_string()),
             }
             saving.set(false);
         });
     };
 
     let mut save_pdf = move |quote: Quote| {
-        let company = settings.read().company().clone();
-        let bytes = match quote_pdf(&quote, quote.document_company(&company)) {
-            Ok(bytes) => bytes,
+        let Some(repository) = store.read().clone() else {
+            quote_error.set("La base de datos todavía no está lista".to_owned());
+            return;
+        };
+        let database = match database_path() {
+            Ok(database) => database,
             Err(message) => {
                 quote_error.set(message);
                 return;
@@ -419,12 +437,18 @@ pub fn App() -> Element {
                 .await;
 
             if let Some(file) = picked {
-                match write_pdf(file.path(), &bytes) {
+                // The save dialog already asked before replacing a file.
+                let target = PdfTarget {
+                    path: file.path(),
+                    database: &database,
+                    overwrite: true,
+                };
+                match save_quote_pdf(&repository, &quote, target).await {
                     Ok(path) => {
                         quote_error.set(String::new());
                         quote_notice_text.set(format!("PDF guardado en {}", path.display()));
                     }
-                    Err(failure) => quote_error.set(failure),
+                    Err(failure) => quote_error.set(failure.to_string()),
                 }
             }
             saving.set(false);
@@ -432,15 +456,16 @@ pub fn App() -> Element {
     };
 
     let mut save_settings = move |next: Settings| {
-        settings.set(next.clone());
+        let change = SettingsChange::between(&settings.read(), &next);
+        settings.set(next);
         let Some(repository) = store.read().clone() else {
             return;
         };
 
         save_state.set(SaveState::Saving);
         spawn(async move {
-            save_state.set(match repository.persist(&next).await {
-                Ok(()) => SaveState::Saved,
+            save_state.set(match update_settings(&repository, change).await {
+                Ok(_) => SaveState::Saved,
                 Err(failure) => SaveState::Failed(failure.to_string()),
             });
         });
@@ -496,12 +521,12 @@ pub fn App() -> Element {
                         };
                         busy.set(true);
                         spawn(async move {
-                            let clock = Clock::system();
-                            match create_backup(&repository, &folder, &clock).await {
+                            match run_backup(&repository, Some(&folder), &Context::system()).await {
                                 Ok(path) => {
-                                    let mut next = settings();
-                                    next.record_backup(clock.now_unix());
-                                    save_settings(next);
+                                    if let Ok(saved) = repository.load().await {
+                                        settings.set(saved);
+                                    }
+                                    save_state.set(SaveState::Saved);
                                     backup_notice.set(format!("Copia creada en {}", path.display()));
                                 }
                                 Err(failure) => backup_notice.set(format!("No se pudo copiar: {failure}")),
@@ -605,19 +630,13 @@ pub fn App() -> Element {
                             if saving() {
                                 return;
                             }
-                            save_step(toggled_step(step, today_in_peru()));
+                            save_step(step.id(), StepChange::Done(!step.is_done()));
                         },
-                        on_due_date: move |(mut step, value): (CaseStep, String)| {
+                        on_due_date: move |(step, value): (CaseStep, String)| {
                             if saving() {
                                 return;
                             }
-                            match parse_step_date(&value) {
-                                Ok(date) => {
-                                    step.reschedule(date);
-                                    save_step(step);
-                                }
-                                Err(message) => action_error.set(message.to_string()),
-                            }
+                            save_step(step.id(), StepChange::Due(value));
                         },
                     }
                 } else {
@@ -645,11 +664,7 @@ pub fn App() -> Element {
                         if saving() {
                             return;
                         }
-                        let Some(mut lead) = leads.read().iter().find(|lead| lead.id() == id).cloned() else {
-                            return;
-                        };
-                        lead.assign(Some(&owner));
-                        persist(lead, false);
+                        assign(id, owner);
                     },
                     on_new: move |_| {
                         form_error.set(String::new());
@@ -708,10 +723,7 @@ pub fn App() -> Element {
                     if saving() {
                         return;
                     }
-                    match parse_form(form()) {
-                        Ok(lead) => persist(lead, true),
-                        Err(message) => form_error.set(message.to_string()),
-                    }
+                    add_from_form();
                 },
                 on_close: move |_| panel_open.set(false),
             }
@@ -730,7 +742,7 @@ pub fn App() -> Element {
                 on_change: move |values| quote_values.set(values),
                 on_edit: move |edit: QuoteEdit| {
                     if !saving() {
-                        save_quote_edit(lead.clone(), edit);
+                        run_quote_edit(lead.clone(), edit);
                     }
                 },
                 on_load: move |quote: Quote| {

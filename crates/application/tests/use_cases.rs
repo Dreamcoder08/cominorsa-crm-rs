@@ -12,8 +12,9 @@ use cominorsa_application::{
     snapshot, status, update_settings,
 };
 use cominorsa_domain::{
-    CaseRepository, DomainError, LeadRepository, Prospect, ProspectKind, ProspectRepository,
-    QuoteRepository, QuoteStatus, RepositoryError, SettingsRepository, Stage, TaxRecord,
+    CaseRepository, DomainError, IgvRate, LeadRepository, Prospect, ProspectKind,
+    ProspectRepository, QuoteRepository, QuoteStatus, RepositoryError, SettingsRepository, Stage,
+    TaxRecord,
 };
 use cominorsa_storage::SqliteLeads;
 use time::{Date, macros::date};
@@ -1218,4 +1219,42 @@ async fn migrating_a_missing_database_is_refused_and_creates_nothing() {
 
     assert_eq!(refused.code(), "database_missing");
     assert!(!scratch.database().exists());
+}
+
+#[tokio::test]
+async fn a_change_between_two_settings_reproduces_the_edit() {
+    let scratch = Scratch::new();
+    let store = SqliteLeads::open(&scratch.database()).await.unwrap();
+    let before = update_settings(
+        &store,
+        SettingsChange {
+            add_members: vec!["Ana".to_owned(), "Luis".to_owned()],
+            backup_directory: Some("copias".to_owned()),
+            ..SettingsChange::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let mut after = before.clone();
+    after.theme = cominorsa_domain::ThemePreference::Dark;
+    after.set_follow_up_days(5).unwrap();
+    after.set_whatsapp_template("Hola {nombre}").unwrap();
+    after.set_igv_rate(IgvRate::parse("10.5").unwrap());
+    after.set_backup_directory("");
+    let mut company = before.company().clone();
+    company.name = "Consultora".to_owned();
+    after.set_company(company).unwrap();
+    after.add_member("Rosa").unwrap();
+    after.remove_member("Luis");
+
+    let change = SettingsChange::between(&before, &after);
+    let saved = update_settings(&store, change).await.unwrap();
+
+    assert_eq!(saved, after);
+    assert_eq!(store.load().await.unwrap(), after);
+    assert_eq!(
+        SettingsChange::between(&after, &after),
+        SettingsChange::default()
+    );
 }
