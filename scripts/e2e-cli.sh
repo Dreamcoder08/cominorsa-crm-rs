@@ -325,10 +325,14 @@ CSV
     cli lead add --name "Lead Posterior" --phone 987654322 --service REINFO >/dev/null
     cli settings set --add-member "Rosa Prueba" >/dev/null
     expect "the mutation is visible" 4 "$(cli export | jq '.leads | length')"
+    echo "archivo del usuario" >crm.restoring.db
     restored="$(cli backup restore --file "$copy")"
     [[ -f "$(jq -r '.safety_copy' <<<"$restored")" ]] || fail "the safety copy does not exist"
     expect "restored state" "$exported" "$(cli export)"
     refused 3 storage_error backup restore --file "$scratch/companies.csv"
+    expect "restore keeps a user file with the old working name" "archivo del usuario" "$(cat crm.restoring.db)"
+    [[ -z "$(compgen -G 'crm.restaurando-*')" ]] || fail "restore left its working copy"
+    rm crm.restoring.db
 
     echo "== status and read-only safety"
     state="$(cli status)"

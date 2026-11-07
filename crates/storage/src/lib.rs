@@ -304,7 +304,7 @@ impl SqliteLeads {
                 .bind(safety_copy.to_string_lossy().into_owned())
                 .execute(&mut lock)
                 .await?;
-            Ok::<_, UpgradeError>(working_copy(database, safety_copy)?)
+            Ok::<_, UpgradeError>(working_copy(database, safety_copy, "migrando")?)
         }
         .await;
         let working = match copied {
@@ -404,9 +404,9 @@ impl SqliteLeads {
         backup: &Path,
         safety: &Path,
     ) -> Result<Self, RepositoryError> {
-        let working = database.with_extension("restoring.db");
+        let working = working_copy(database, backup, "restaurando")?;
 
-        if let Err(error) = validate_backup(backup, &working).await {
+        if let Err(error) = validate_backup(&working).await {
             remove_with_sidecars(&working);
             return Err(error);
         }
@@ -554,9 +554,9 @@ fn new_file_beside(database: &Path, label: &str) -> Result<(PathBuf, File), Repo
     Err(failure("No hay un nombre libre junto a la base"))
 }
 
-/// A copy of `source` in a new file beside `database`.
-fn working_copy(database: &Path, source: &Path) -> Result<PathBuf, RepositoryError> {
-    let (working, mut file) = new_file_beside(database, "migrando")?;
+/// A copy of `source` in a new file beside `database`, named after `label`.
+fn working_copy(database: &Path, source: &Path, label: &str) -> Result<PathBuf, RepositoryError> {
+    let (working, mut file) = new_file_beside(database, label)?;
     let copied = File::open(source)
         .and_then(|mut source| io::copy(&mut source, &mut file))
         .and_then(|_| file.sync_all());
@@ -665,8 +665,7 @@ fn file_digest(path: &Path) -> Result<u64, UpgradeError> {
     Ok(hasher.finish())
 }
 
-async fn validate_backup(backup: &Path, working: &Path) -> Result<(), RepositoryError> {
-    fs::copy(backup, working).map_err(failure)?;
+async fn validate_backup(working: &Path) -> Result<(), RepositoryError> {
     ensure_crm_schema(working).await?;
 
     let store = SqliteLeads::open(working).await?;

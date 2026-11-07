@@ -360,3 +360,49 @@ fn migrate_moves_an_older_rollback_journal_database_to_wal() {
 
     assert_eq!(sqlite(&db, "PRAGMA journal_mode"), "wal");
 }
+
+#[test]
+fn restore_never_touches_a_file_with_the_old_working_name() {
+    let scratch = Scratch::new();
+    let db = scratch.database();
+    add_lead(&db, "Lead respaldado", "987650006", "DAC");
+    let folder = scratch.file("copias");
+    fs::create_dir_all(&folder).unwrap();
+    let backup = data(&run(
+        &db,
+        &["backup", "create", "--folder", folder.to_str().unwrap()],
+    ))["path"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let junk = scratch.file("junk.db");
+    fs::write(&junk, "no soy una copia").unwrap();
+    let user_files = ["crm.restoring.db", "crm.restoring.db-wal"];
+    for name in user_files {
+        fs::write(scratch.file(name), format!("archivo del usuario: {name}")).unwrap();
+    }
+
+    let refused = run(
+        &db,
+        &["backup", "restore", "--file", junk.to_str().unwrap()],
+    );
+    assert_eq!(failure(&refused, 3).0, "storage_error");
+    let restored = data(&run(&db, &["backup", "restore", "--file", &backup]));
+
+    for name in user_files {
+        assert_eq!(
+            fs::read_to_string(scratch.file(name)).unwrap(),
+            format!("archivo del usuario: {name}")
+        );
+    }
+    assert!(Path::new(restored["safety_copy"].as_str().unwrap()).exists());
+    assert_eq!(lead_names(&db), ["Lead respaldado"]);
+    assert!(
+        !scratch
+            .names()
+            .iter()
+            .any(|name| name.contains("restaurando") || name.contains("migrando")),
+        "{:?}",
+        scratch.names()
+    );
+}
