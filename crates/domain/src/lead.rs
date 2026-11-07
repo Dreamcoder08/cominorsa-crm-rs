@@ -30,6 +30,18 @@ pub enum DomainError {
     MissingContractTotal,
     #[error("El plan sugerido solo se aplica a un expediente sin hitos")]
     MilestonesAlreadyPlanned,
+    #[error("La cotización necesita al menos una línea")]
+    EmptyQuote,
+    #[error("La cantidad debe ser un número entero mayor que cero")]
+    InvalidQuantity,
+    #[error("La validez no puede ser anterior a la fecha de emisión")]
+    InvalidQuoteValidity,
+    #[error("Ingresa una tasa de IGV entre 0 y 100, por ejemplo 18")]
+    InvalidIgvRate,
+    #[error("Una cotización enviada no se cambia: crea una nueva versión")]
+    QuoteLocked,
+    #[error("La cotización no admite ese cambio de estado")]
+    InvalidQuoteTransition,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

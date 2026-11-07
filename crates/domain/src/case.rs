@@ -9,7 +9,7 @@ use time::{Date, Duration, Month};
 use uuid::Uuid;
 
 use crate::{
-    BillingMilestone, DomainError, Lead, Money, RepositoryError, Ruc, Stage,
+    BillingMilestone, DomainError, Lead, Money, Quote, RepositoryError, Ruc, Stage, accepted_quote,
     lead::{optional_ruc, optional_text, required},
 };
 
@@ -375,6 +375,15 @@ pub struct CaseFile {
 }
 
 impl CaseFile {
+    /// Suggests the total of the lead's accepted quote as the contract total.
+    /// It stays editable; without an accepted quote the total stays undefined.
+    pub fn suggest_total_from(&mut self, quotes: &[Quote]) -> Result<(), DomainError> {
+        match accepted_quote(quotes, self.case.lead_id) {
+            Some(quote) => self.case.set_contract_total(quote.totals().total),
+            None => Ok(()),
+        }
+    }
+
     /// Builds the case of a signed lead. Step dates are editable suggestions.
     pub fn open(
         lead: &Lead,

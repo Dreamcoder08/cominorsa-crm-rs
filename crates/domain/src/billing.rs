@@ -1,7 +1,7 @@
 //! Billing milestones of a case. They track collections and never issue tax
 //! invoices. Amounts are integer cents; money never touches a float.
 
-use std::future::Future;
+use std::{cmp::Ordering, future::Future};
 
 use time::{Date, Duration};
 use uuid::Uuid;
@@ -267,6 +267,25 @@ impl CaseFile {
             + 1
     }
 
+    /// What every milestone adds up to, paid or not.
+    pub fn milestones_total(&self) -> Money {
+        Money::sum(self.milestones.iter().map(BillingMilestone::amount))
+    }
+
+    /// The difference to the contract total. A case without a total or without
+    /// milestones has nothing to compare.
+    pub fn milestone_gap(&self) -> Option<MilestoneGap> {
+        let total = self.case.contract_total()?;
+        let planned = self.milestones_total();
+
+        match planned.cmp(&total) {
+            _ if self.milestones.is_empty() => None,
+            Ordering::Equal => None,
+            Ordering::Less => Some(MilestoneGap::Short(total.saturating_sub(planned))),
+            Ordering::Greater => Some(MilestoneGap::Over(planned.saturating_sub(total))),
+        }
+    }
+
     /// What unpaid milestones add up to.
     pub fn unpaid_total(&self) -> Money {
         Money::sum(
@@ -276,6 +295,15 @@ impl CaseFile {
                 .map(BillingMilestone::amount),
         )
     }
+}
+
+/// How far the milestones of a case are from its contract total.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MilestoneGap {
+    /// The milestones add up to less than the total, by this amount.
+    Short(Money),
+    /// The milestones add up to more than the total, by this amount.
+    Over(Money),
 }
 
 /// How much of a case has been collected.

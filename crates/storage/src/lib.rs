@@ -4,12 +4,13 @@ use std::{collections::HashMap, fs, path::Path};
 
 use cominorsa_domain::{
     BillingMilestone, BillingMilestoneRecord, BillingRepository, Case, CaseClosure, CaseFile,
-    CaseRecord, CaseRepository, CaseStep, CaseStepRecord, Lead, LeadRecord, LeadRepository, Money,
-    Prospect, ProspectKind, ProspectRepository, RepositoryError, Settings, SettingsRepository,
-    TaxRecord, ThemePreference,
+    CaseRecord, CaseRepository, CaseStep, CaseStepRecord, CompanyProfile, Lead, LeadRecord,
+    LeadRepository, Money, Prospect, ProspectKind, ProspectRepository, Quote, QuoteDraft,
+    QuoteLineRecord, QuoteNumber, QuoteRecord, QuoteRepository, QuoteStatus, RepositoryError,
+    Settings, SettingsRepository, TaxRecord, ThemePreference,
 };
 use sqlx::{
-    Row, SqliteExecutor, SqlitePool,
+    Row, Sqlite, SqliteExecutor, SqlitePool, Transaction,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow},
 };
 use time::{Date, format_description::well_known::Iso8601};
@@ -33,8 +34,8 @@ const SELECT_ALL: &str = "SELECT id, name, phone, ruc, service, stage, follow_up
     FROM leads ORDER BY follow_up_on, id";
 
 const INSERT_CASE: &str = "INSERT INTO cases (id, lead_id, client_name, ruc, service, owner,
-        opened_on, status)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        opened_on, status, contract_total_cents)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
     ON CONFLICT (lead_id) DO NOTHING";
 
 const INSERT_CASE_STEP: &str = "INSERT INTO case_steps (id, case_id, position, title, due_on,
@@ -102,6 +103,40 @@ const SEARCH_PROSPECTS: &str = "SELECT kind, name, profile, concessions, hectare
     ORDER BY needs_review, concessions DESC, name
     LIMIT ?2";
 
+const NEXT_QUOTE_SEQUENCE: &str = "INSERT INTO quote_numbers (year, last_sequence) VALUES (?1, 1)
+    ON CONFLICT (year) DO UPDATE SET last_sequence = last_sequence + 1
+    RETURNING last_sequence";
+
+const FIND_QUOTE_REPEAT: &str = "SELECT id FROM quotes WHERE id = ?1 OR supersedes = ?2";
+
+const INSERT_QUOTE: &str = "INSERT INTO quotes (id, lead_id, year, sequence, version, supersedes,
+        client_name, client_ruc, service, issued_on, valid_until, notes, status,
+        igv_basis_points, company_name, company_ruc, company_address, company_phone,
+        company_email)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)";
+
+const INSERT_QUOTE_LINE: &str =
+    "INSERT INTO quote_lines (quote_id, position, description, quantity,
+        unit_price_cents)
+    VALUES (?1, ?2, ?3, ?4, ?5)";
+
+const UPDATE_QUOTE_DRAFT: &str = "UPDATE quotes
+    SET issued_on = ?2, valid_until = ?3, notes = ?4, igv_basis_points = ?5
+    WHERE id = ?1 AND status = 'draft'";
+
+const UPDATE_QUOTE_STATUS: &str = "UPDATE quotes
+    SET status = ?3, company_name = ?4, company_ruc = ?5, company_address = ?6,
+        company_phone = ?7, company_email = ?8
+    WHERE id = ?1 AND status = ?2";
+
+const SELECT_QUOTES: &str = "SELECT id, lead_id, year, sequence, version, supersedes, client_name,
+        client_ruc, service, issued_on, valid_until, notes, status, igv_basis_points,
+        company_name, company_ruc, company_address, company_phone, company_email
+    FROM quotes ORDER BY year, sequence, version";
+
+const SELECT_QUOTE_LINES: &str = "SELECT quote_id, description, quantity, unit_price_cents
+    FROM quote_lines ORDER BY quote_id, position";
+
 const CRM_TABLES: i64 = 2;
 const CRM_TABLE_COUNT: &str = "SELECT COUNT(*) FROM sqlite_master
     WHERE type = 'table' AND name IN ('leads', '_sqlx_migrations')";
@@ -111,6 +146,12 @@ const FOLLOW_UP_DAYS_KEY: &str = "follow_up_days";
 const WHATSAPP_TEMPLATE_KEY: &str = "whatsapp_template";
 const BACKUP_DIRECTORY_KEY: &str = "backup_directory";
 const LAST_BACKUP_AT_KEY: &str = "last_backup_at";
+const IGV_RATE_KEY: &str = "igv_basis_points";
+const COMPANY_NAME_KEY: &str = "company_name";
+const COMPANY_RUC_KEY: &str = "company_ruc";
+const COMPANY_ADDRESS_KEY: &str = "company_address";
+const COMPANY_PHONE_KEY: &str = "company_phone";
+const COMPANY_EMAIL_KEY: &str = "company_email";
 const UPSERT_SETTING: &str = "INSERT INTO settings (key, value) VALUES (?1, ?2)
     ON CONFLICT (key) DO UPDATE SET value = excluded.value";
 
@@ -266,6 +307,7 @@ async fn validate_backup(backup: &Path, working: &Path) -> Result<(), Repository
         store.list().await?;
         store.count().await?;
         store.active_cases().await?;
+        store.quotes().await?;
         store.load().await
     }
     .await;
@@ -342,6 +384,7 @@ impl CaseRepository for SqliteLeads {
             .bind(case.owner())
             .bind(case.opened_on().to_string())
             .bind(case.status().code())
+            .bind(case.contract_total().map(Money::cents))
             .execute(&mut *transaction)
             .await
             .map_err(failure)?;
@@ -482,6 +525,169 @@ impl BillingRepository for SqliteLeads {
     }
 }
 
+async fn insert_quote_lines(
+    transaction: &mut Transaction<'_, Sqlite>,
+    quote: &Quote,
+) -> Result<(), RepositoryError> {
+    for (position, line) in (1_i64..).zip(quote.lines()) {
+        sqlx::query(INSERT_QUOTE_LINE)
+            .bind(quote.id().to_string())
+            .bind(position)
+            .bind(line.description())
+            .bind(i64::from(line.quantity()))
+            .bind(line.unit_price().cents())
+            .execute(&mut **transaction)
+            .await
+            .map_err(failure)?;
+    }
+
+    Ok(())
+}
+
+impl QuoteRepository for SqliteLeads {
+    async fn create_quote(&self, draft: &QuoteDraft) -> Result<Quote, RepositoryError> {
+        // The write lock is taken first, so no other writer can read the same
+        // counter, even from a second process.
+        let mut transaction = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(failure)?;
+        let repeated: Option<String> = sqlx::query_scalar(FIND_QUOTE_REPEAT)
+            .bind(draft.id().to_string())
+            .bind(draft.revised_quote().map(|id| id.to_string()))
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(failure)?;
+
+        if let Some(id) = repeated {
+            transaction.rollback().await.map_err(failure)?;
+            let stored = self.quotes().await?;
+            return stored
+                .into_iter()
+                .find(|quote| quote.id().to_string() == id)
+                .ok_or_else(|| failure("La cotización ya no existe"));
+        }
+
+        let number = match draft.next_version() {
+            Some(number) => number,
+            None => {
+                let sequence: i64 = sqlx::query_scalar(NEXT_QUOTE_SEQUENCE)
+                    .bind(draft.year())
+                    .fetch_one(&mut *transaction)
+                    .await
+                    .map_err(failure)?;
+                let sequence = u32::try_from(sequence).map_err(failure)?;
+                QuoteNumber::new(draft.year(), sequence, 1).map_err(failure)?
+            }
+        };
+        let quote = draft.clone().numbered(number);
+        let company = quote.company();
+
+        sqlx::query(INSERT_QUOTE)
+            .bind(quote.id().to_string())
+            .bind(quote.lead_id().to_string())
+            .bind(number.year())
+            .bind(i64::from(number.sequence()))
+            .bind(i64::from(number.version()))
+            .bind(quote.supersedes().map(|id| id.to_string()))
+            .bind(quote.client_name())
+            .bind(quote.client_ruc().map(|ruc| ruc.as_str()))
+            .bind(quote.service())
+            .bind(quote.issued_on().to_string())
+            .bind(quote.valid_until().to_string())
+            .bind(quote.notes())
+            .bind(quote.status().code())
+            .bind(i64::from(quote.igv_rate().basis_points()))
+            .bind(&company.name)
+            .bind(&company.ruc)
+            .bind(&company.address)
+            .bind(&company.phone)
+            .bind(&company.email)
+            .execute(&mut *transaction)
+            .await
+            .map_err(failure)?;
+        insert_quote_lines(&mut transaction, &quote).await?;
+
+        transaction.commit().await.map_err(failure)?;
+        Ok(quote)
+    }
+
+    async fn save_quote_draft(&self, quote: &Quote) -> Result<(), RepositoryError> {
+        let mut transaction = self.pool.begin().await.map_err(failure)?;
+        let updated = sqlx::query(UPDATE_QUOTE_DRAFT)
+            .bind(quote.id().to_string())
+            .bind(quote.issued_on().to_string())
+            .bind(quote.valid_until().to_string())
+            .bind(quote.notes())
+            .bind(i64::from(quote.igv_rate().basis_points()))
+            .execute(&mut *transaction)
+            .await
+            .map_err(failure)?;
+
+        if updated.rows_affected() == 0 {
+            return Err(failure("La cotización ya no es un borrador"));
+        }
+
+        sqlx::query("DELETE FROM quote_lines WHERE quote_id = ?1")
+            .bind(quote.id().to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(failure)?;
+        insert_quote_lines(&mut transaction, quote).await?;
+
+        transaction.commit().await.map_err(failure)
+    }
+
+    async fn save_quote_status(
+        &self,
+        quote: &Quote,
+        from: QuoteStatus,
+    ) -> Result<(), RepositoryError> {
+        let company = quote.company();
+        let updated = sqlx::query(UPDATE_QUOTE_STATUS)
+            .bind(quote.id().to_string())
+            .bind(from.code())
+            .bind(quote.status().code())
+            .bind(&company.name)
+            .bind(&company.ruc)
+            .bind(&company.address)
+            .bind(&company.phone)
+            .bind(&company.email)
+            .execute(&self.pool)
+            .await
+            .map_err(failure)?;
+
+        match updated.rows_affected() {
+            0 => Err(failure("La cotización cambió de estado; revisa la lista")),
+            _ => Ok(()),
+        }
+    }
+
+    async fn quotes(&self) -> Result<Vec<Quote>, RepositoryError> {
+        let rows = sqlx::query(SELECT_QUOTES)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(failure)?;
+        let line_rows = sqlx::query(SELECT_QUOTE_LINES)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(failure)?;
+
+        let mut lines: HashMap<String, Vec<QuoteLineRecord>> = HashMap::new();
+        for row in &line_rows {
+            let quote_id: String = row.try_get("quote_id").map_err(failure)?;
+            lines.entry(quote_id).or_default().push(QuoteLineRecord {
+                description: row.try_get("description").map_err(failure)?,
+                quantity: row.try_get("quantity").map_err(failure)?,
+                unit_price_cents: row.try_get("unit_price_cents").map_err(failure)?,
+            });
+        }
+
+        rows.iter().map(|row| to_quote(row, &mut lines)).collect()
+    }
+}
+
 impl ProspectRepository for SqliteLeads {
     async fn import(&self, prospects: &[Prospect]) -> Result<usize, RepositoryError> {
         let mut transaction = self.pool.begin().await.map_err(failure)?;
@@ -567,6 +773,7 @@ impl SettingsRepository for SqliteLeads {
             .await
             .map_err(failure)?;
         let mut settings = Settings::default();
+        let mut company = CompanyProfile::default();
 
         for row in &rows {
             let key: String = row.try_get("key").map_err(failure)?;
@@ -586,9 +793,16 @@ impl SettingsRepository for SqliteLeads {
                 }
                 BACKUP_DIRECTORY_KEY => settings.set_backup_directory(&value),
                 LAST_BACKUP_AT_KEY => settings.record_backup(value.parse().map_err(failure)?),
+                IGV_RATE_KEY => settings.restore_igv_rate(&value),
+                COMPANY_NAME_KEY => company.name = value,
+                COMPANY_RUC_KEY => company.ruc = value,
+                COMPANY_ADDRESS_KEY => company.address = value,
+                COMPANY_PHONE_KEY => company.phone = value,
+                COMPANY_EMAIL_KEY => company.email = value,
                 _ => {}
             }
         }
+        settings.restore_company(company);
 
         let members = sqlx::query("SELECT name FROM team_members ORDER BY position")
             .fetch_all(&self.pool)
@@ -612,6 +826,7 @@ impl SettingsRepository for SqliteLeads {
                 WHATSAPP_TEMPLATE_KEY,
                 settings.whatsapp_template().to_owned(),
             ),
+            (IGV_RATE_KEY, settings.igv_rate().basis_points().to_string()),
         ] {
             sqlx::query(UPSERT_SETTING)
                 .bind(key)
@@ -621,7 +836,9 @@ impl SettingsRepository for SqliteLeads {
                 .map_err(failure)?;
         }
 
-        let backup = [
+        let company = settings.company();
+        let filled = |value: &str| (!value.is_empty()).then(|| value.to_owned());
+        let optional = [
             (
                 BACKUP_DIRECTORY_KEY,
                 settings.backup_directory().map(str::to_owned),
@@ -630,8 +847,13 @@ impl SettingsRepository for SqliteLeads {
                 LAST_BACKUP_AT_KEY,
                 settings.last_backup_at().map(|at| at.to_string()),
             ),
+            (COMPANY_NAME_KEY, filled(&company.name)),
+            (COMPANY_RUC_KEY, filled(&company.ruc)),
+            (COMPANY_ADDRESS_KEY, filled(&company.address)),
+            (COMPANY_PHONE_KEY, filled(&company.phone)),
+            (COMPANY_EMAIL_KEY, filled(&company.email)),
         ];
-        for (key, value) in backup {
+        for (key, value) in optional {
             let Some(value) = value else {
                 sqlx::query("DELETE FROM settings WHERE key = ?1")
                     .bind(key)
@@ -797,6 +1019,46 @@ fn to_milestone(row: &SqliteRow) -> Result<BillingMilestone, RepositoryError> {
             .map(|date| Date::parse(&date, &Iso8601::DATE))
             .transpose()
             .map_err(failure)?,
+    })
+    .map_err(failure)
+}
+
+fn to_quote(
+    row: &SqliteRow,
+    lines: &mut HashMap<String, Vec<QuoteLineRecord>>,
+) -> Result<Quote, RepositoryError> {
+    let id: String = row.try_get("id").map_err(failure)?;
+    let lead_id: String = row.try_get("lead_id").map_err(failure)?;
+    let supersedes: Option<String> = row.try_get("supersedes").map_err(failure)?;
+    let issued_on: String = row.try_get("issued_on").map_err(failure)?;
+    let valid_until: String = row.try_get("valid_until").map_err(failure)?;
+
+    Quote::restore(QuoteRecord {
+        id: Uuid::parse_str(&id).map_err(failure)?,
+        lead_id: Uuid::parse_str(&lead_id).map_err(failure)?,
+        year: row.try_get("year").map_err(failure)?,
+        sequence: row.try_get("sequence").map_err(failure)?,
+        version: row.try_get("version").map_err(failure)?,
+        supersedes: supersedes
+            .map(|id| Uuid::parse_str(&id))
+            .transpose()
+            .map_err(failure)?,
+        client_name: row.try_get("client_name").map_err(failure)?,
+        client_ruc: row.try_get("client_ruc").map_err(failure)?,
+        service: row.try_get("service").map_err(failure)?,
+        issued_on: Date::parse(&issued_on, &Iso8601::DATE).map_err(failure)?,
+        valid_until: Date::parse(&valid_until, &Iso8601::DATE).map_err(failure)?,
+        notes: row.try_get("notes").map_err(failure)?,
+        status: row.try_get("status").map_err(failure)?,
+        igv_basis_points: row.try_get("igv_basis_points").map_err(failure)?,
+        company: CompanyProfile {
+            name: row.try_get("company_name").map_err(failure)?,
+            ruc: row.try_get("company_ruc").map_err(failure)?,
+            address: row.try_get("company_address").map_err(failure)?,
+            phone: row.try_get("company_phone").map_err(failure)?,
+            email: row.try_get("company_email").map_err(failure)?,
+        },
+        lines: lines.remove(&id).unwrap_or_default(),
     })
     .map_err(failure)
 }

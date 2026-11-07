@@ -1,6 +1,6 @@
 use cominorsa_domain::{
-    BillingMilestone, BillingMilestoneRecord, BillingSummary, CaseFile, DomainError, Lead, Money,
-    NewLead, NewMilestone, procedure_template,
+    BillingMilestone, BillingMilestoneRecord, BillingSummary, CaseFile, DomainError, Lead,
+    MilestoneGap, Money, NewLead, NewMilestone, procedure_template,
 };
 use time::{Date, macros::date};
 use uuid::Uuid;
@@ -320,4 +320,69 @@ fn the_next_position_never_reuses_one_after_a_delete() {
     file.milestones = vec![milestone(1, 100), milestone(3, 100)];
 
     assert_eq!(file.next_milestone_position(), 4);
+}
+
+fn planned_case(total: Option<i64>, milestones: &[(i64, bool)]) -> CaseFile {
+    let mut file = case_file();
+    if let Some(total) = total {
+        file.case
+            .set_contract_total(Money::from_cents(total).unwrap())
+            .unwrap();
+    }
+    file.milestones = (1..)
+        .zip(milestones)
+        .map(|(position, (cents, paid))| {
+            let mut milestone = BillingMilestone::create(NewMilestone {
+                case_id: file.case.id(),
+                position,
+                title: format!("Hito {position}"),
+                amount: Money::from_cents(*cents).unwrap(),
+                due_on: TODAY,
+            })
+            .unwrap();
+            if *paid {
+                milestone.mark_paid(TODAY);
+            }
+            milestone
+        })
+        .collect();
+    file
+}
+
+#[test]
+fn milestones_that_sum_to_the_total_have_no_gap() {
+    assert_eq!(
+        planned_case(Some(1_000), &[(600, true), (400, false)]).milestone_gap(),
+        None
+    );
+}
+
+#[test]
+fn milestones_below_the_total_report_what_is_missing_counting_paid_ones() {
+    assert_eq!(
+        planned_case(Some(1_000), &[(600, true), (300, false)]).milestone_gap(),
+        Some(MilestoneGap::Short(Money::from_cents(100).unwrap()))
+    );
+}
+
+#[test]
+fn milestones_above_the_total_report_the_excess() {
+    assert_eq!(
+        planned_case(Some(1_000), &[(1_250, false)]).milestone_gap(),
+        Some(MilestoneGap::Over(Money::from_cents(250).unwrap()))
+    );
+}
+
+#[test]
+fn a_case_without_a_total_or_without_milestones_has_no_gap() {
+    assert_eq!(planned_case(None, &[(500, false)]).milestone_gap(), None);
+    assert_eq!(planned_case(Some(1_000), &[]).milestone_gap(), None);
+}
+
+#[test]
+fn adds_up_every_milestone() {
+    assert_eq!(
+        planned_case(None, &[(600, true), (300, false)]).milestones_total(),
+        Money::from_cents(900).unwrap()
+    );
 }

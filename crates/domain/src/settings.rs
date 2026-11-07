@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use crate::{DomainError, RepositoryError, whatsapp};
+use crate::{DomainError, IgvRate, RepositoryError, Ruc, whatsapp};
 
 const DEFAULT_FOLLOW_UP_DAYS: u32 = 3;
 const DEFAULT_WHATSAPP_TEMPLATE: &str =
@@ -40,6 +40,33 @@ impl ThemePreference {
     }
 }
 
+/// The company that issues quotes. Nothing is prefilled: a blank field stays
+/// blank and is left out of the quote.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CompanyProfile {
+    pub name: String,
+    pub ruc: String,
+    pub address: String,
+    pub phone: String,
+    pub email: String,
+}
+
+impl CompanyProfile {
+    pub fn has_name(&self) -> bool {
+        !self.name.trim().is_empty()
+    }
+
+    fn trimmed(self) -> Self {
+        Self {
+            name: self.name.trim().to_owned(),
+            ruc: self.ruc.trim().to_owned(),
+            address: self.address.trim().to_owned(),
+            phone: self.phone.trim().to_owned(),
+            email: self.email.trim().to_owned(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub theme: ThemePreference,
@@ -48,6 +75,8 @@ pub struct Settings {
     whatsapp_template: String,
     backup_directory: Option<String>,
     last_backup_at: Option<i64>,
+    company: CompanyProfile,
+    igv_rate: IgvRate,
 }
 
 impl Default for Settings {
@@ -59,6 +88,8 @@ impl Default for Settings {
             whatsapp_template: DEFAULT_WHATSAPP_TEMPLATE.to_owned(),
             backup_directory: None,
             last_backup_at: None,
+            company: CompanyProfile::default(),
+            igv_rate: IgvRate::default(),
         }
     }
 }
@@ -135,6 +166,44 @@ impl Settings {
 
     pub fn last_backup_at(&self) -> Option<i64> {
         self.last_backup_at
+    }
+
+    /// Trims every field. A RUC, when given, must be valid.
+    pub fn set_company(&mut self, company: CompanyProfile) -> Result<(), DomainError> {
+        let company = company.trimmed();
+        if !company.ruc.is_empty() {
+            Ruc::parse(&company.ruc)?;
+        }
+
+        self.company = company;
+        Ok(())
+    }
+
+    /// Rehydrates a stored profile. Validation applies to edits only, so
+    /// values saved under older rules still load and can be corrected.
+    pub fn restore_company(&mut self, company: CompanyProfile) {
+        self.company = company;
+    }
+
+    pub fn company(&self) -> &CompanyProfile {
+        &self.company
+    }
+
+    pub fn set_igv_rate(&mut self, rate: IgvRate) {
+        self.igv_rate = rate;
+    }
+
+    /// Rehydrates a stored rate. An unreadable value keeps the default, to be
+    /// corrected in Settings, and never blocks the app from opening.
+    pub fn restore_igv_rate(&mut self, stored: &str) {
+        let stored = stored.parse().map(IgvRate::from_basis_points);
+        if let Ok(Ok(rate)) = stored {
+            self.igv_rate = rate;
+        }
+    }
+
+    pub fn igv_rate(&self) -> IgvRate {
+        self.igv_rate
     }
 
     pub fn team(&self) -> &[String] {
