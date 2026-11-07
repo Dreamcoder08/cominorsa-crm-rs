@@ -1,15 +1,24 @@
 //! Presentational components. State and persistence live in `App`.
 
-use cominorsa_domain::{CaseFile, Lead, Prospect, Stage};
+use cominorsa_application::AppError;
+use cominorsa_domain::{CaseFile, Lead, LeadOrigin, Prospect, Stage};
 use dioxus::prelude::*;
 use time::Date;
 use uuid::Uuid;
 
 use crate::{
     AgendaGroups, AgendaItem, FollowUp, FormValues, PipelineSummary, format_date, format_soles,
-    matches_query, milestone_status_label, owner_options, profile_label, step_status_label,
-    tax_status_class,
+    matches_query, milestone_status_label, owner_options, presentation::consent_label,
+    profile_label, step_status_label, tax_status_class,
 };
+
+/// A consent decision a person records on a lead card.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConsentEdit {
+    pub id: Uuid,
+    pub revoke: bool,
+    pub source: String,
+}
 
 /// Every date on a case step is a suggestion, never a legal deadline.
 pub(crate) const STEP_DATE_NOTE: &str = "Fecha sugerida, ajústala";
@@ -310,6 +319,7 @@ pub fn Workspace(
     on_advance: EventHandler<Uuid>,
     on_assign: EventHandler<(Uuid, String)>,
     #[props(default)] on_quote: EventHandler<Uuid>,
+    #[props(default)] on_consent: EventHandler<ConsentEdit>,
 ) -> Element {
     let summary = PipelineSummary::of(&leads, today);
     let is_empty = leads.is_empty();
@@ -359,7 +369,7 @@ pub fn Workspace(
                         p { "Prueba con otro nombre, RUC, teléfono o servicio." }
                     }
                 } else {
-                    Board { leads: visible, today, whatsapp_template, team, on_advance, on_assign, on_quote }
+                    Board { leads: visible, today, whatsapp_template, team, on_advance, on_assign, on_quote, on_consent }
                 }
     }
 }
@@ -383,6 +393,7 @@ fn Board(
     on_advance: EventHandler<Uuid>,
     on_assign: EventHandler<(Uuid, String)>,
     on_quote: EventHandler<Uuid>,
+    on_consent: EventHandler<ConsentEdit>,
 ) -> Element {
     rsx! {
         section { class: "board", aria_label: "Etapas del embudo",
@@ -406,12 +417,15 @@ fn Board(
                                     LeadCard {
                                         key: "{lead.id()}",
                                         status: FollowUp::of(&lead, today),
-                                        whatsapp: lead.whatsapp_url(&whatsapp_template),
+                                        whatsapp: lead
+                                            .whatsapp_link(&whatsapp_template)
+                                            .map_err(|refusal| AppError::from(refusal).code().to_owned()),
                                         owners: owner_options(&team, lead.owner()),
                                         lead,
                                         on_advance,
                                         on_assign,
                                         on_quote,
+                                        on_consent,
                                     }
                                 }
                                 if count == 0 {
@@ -430,13 +444,19 @@ fn Board(
 fn LeadCard(
     lead: Lead,
     status: FollowUp,
-    whatsapp: Option<String>,
+    /// The chat link, or the code of the rule that refuses it.
+    whatsapp: Result<String, String>,
     owners: Vec<String>,
     on_advance: EventHandler<Uuid>,
     on_assign: EventHandler<(Uuid, String)>,
     on_quote: EventHandler<Uuid>,
+    on_consent: EventHandler<ConsentEdit>,
 ) -> Element {
     let id = lead.id();
+    let revoke = lead.has_consent();
+    let mut editing_consent = use_signal(|| false);
+    let mut consent_source = use_signal(String::new);
+    let consent = consent_label(&lead);
 
     rsx! {
         article { class: "card {status.class()}",
@@ -450,7 +470,10 @@ fn LeadCard(
             }
             if lead.renewal_of().is_some() {
                 p { class: "agenda-kind step", "Cliente existente" }
+            } else {
+                p { class: "detail", "Origen: {lead.origin().label()}" }
             }
+            p { class: "detail consent", "{consent}" }
             if !owners.is_empty() {
                 select {
                     class: "owner-select",
@@ -470,13 +493,31 @@ fn LeadCard(
             div { class: "card-bottom",
                 span { class: "status {status.class()}", "{status.label()}" }
                 div { class: "card-actions",
-                    if let Some(url) = whatsapp {
-                        a {
-                            class: "secondary",
-                            href: "{url}",
-                            aria_label: "Preparar mensaje de WhatsApp para {lead.name()}",
-                            "WhatsApp"
-                        }
+                    match &whatsapp {
+                        Ok(url) => rsx! {
+                            a {
+                                class: "secondary",
+                                href: "{url}",
+                                aria_label: "Preparar mensaje de WhatsApp para {lead.name()}",
+                                "WhatsApp"
+                            }
+                        },
+                        Err(code) if code == "no_consent" => rsx! {
+                            button {
+                                class: "secondary",
+                                disabled: true,
+                                "data-code": "{code}",
+                                title: "Registra el consentimiento del cliente para abrir el chat",
+                                "WhatsApp"
+                            }
+                        },
+                        Err(_) => rsx! {},
+                    }
+                    button {
+                        class: "secondary",
+                        aria_label: if revoke { "Retirar consentimiento de {lead.name()}" } else { "Registrar consentimiento de {lead.name()}" },
+                        onclick: move |_| editing_consent.set(true),
+                        if revoke { "Retirar consentimiento" } else { "Registrar consentimiento" }
                     }
                     button {
                         class: "secondary",
@@ -490,6 +531,33 @@ fn LeadCard(
                             aria_label: "Mover {lead.name()} a la siguiente etapa",
                             onclick: move |_| on_advance.call(id),
                             "Avanzar"
+                        }
+                    }
+                }
+            }
+            if editing_consent() {
+                form {
+                    class: "consent-form",
+                    onsubmit: move |event| {
+                        event.prevent_default();
+                        on_consent.call(ConsentEdit { id, revoke, source: consent_source() });
+                        editing_consent.set(false);
+                        consent_source.set(String::new());
+                    },
+                    label {
+                        if revoke { "¿Cómo retiró el consentimiento?" } else { "¿Cómo aceptó ser contactado?" }
+                        input {
+                            value: "{consent_source}",
+                            oninput: move |event| consent_source.set(event.value()),
+                        }
+                    }
+                    div { class: "button-row",
+                        button { class: "primary", r#type: "submit", "Guardar" }
+                        button {
+                            class: "secondary",
+                            r#type: "button",
+                            onclick: move |_| editing_consent.set(false),
+                            "Cancelar"
                         }
                     }
                 }
@@ -597,6 +665,21 @@ pub fn LeadForm(
                                 }
                             }
                         }
+                    }
+                    label { "Origen"
+                        select {
+                            onchange: edit(|v, text| v.origin = text),
+                            for origin in LeadOrigin::ALL {
+                                option {
+                                    key: "{origin.code()}",
+                                    value: "{origin.code()}",
+                                    selected: values.origin == origin.code()
+                                        || (values.origin.is_empty() && origin == LeadOrigin::Other),
+                                    "{origin.label()}"
+                                }
+                            }
+                        }
+                        span { class: "hint", "Formulario web, WhatsApp entrante y llamada entrante registran el consentimiento." }
                     }
                     label { "Próximo seguimiento"
                         input {

@@ -142,6 +142,8 @@ a.secondary { text-decoration: none; }
 .card-top h3 { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
 .service { flex: none; max-width: 45%; color: var(--muted); font-size: 11px; font-weight: 600; text-align: right; }
 .detail { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.hint { display: block; color: var(--muted); font-size: 12px; font-weight: 400; }
+.consent-form { display: grid; gap: var(--space-2); margin-top: var(--space-2); }
 .card-bottom { display: flex; flex-wrap: wrap; gap: var(--space-2); justify-content: space-between; align-items: center; margin-top: var(--space-2); }
 
 .status { color: var(--muted); font-size: 12px; font-weight: 600; }

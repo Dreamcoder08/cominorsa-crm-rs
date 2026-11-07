@@ -12,7 +12,7 @@ mod quote_view;
 mod settings_view;
 mod views;
 
-use cominorsa_application::open_at_startup;
+use cominorsa_application::{auto_backup, open_at_startup, record_consent, revoke_consent};
 use cominorsa_domain::{
     Case, CaseFile, CaseRepository, CaseStep, Lead, LeadRepository, Prospect, ProspectRepository,
     Quote, QuoteRepository, Settings, SettingsRepository,
@@ -41,10 +41,10 @@ pub use cominorsa_application::{
     save_quote, save_quote_edit, save_quote_pdf, send_quote, set_step_done, step_status_label,
     suggested_total_note, today_in_peru, toggled_step, update_settings, write_pdf,
 };
-pub use presentation::{quote_status_class, tax_status_class};
+pub use presentation::{auto_backup_label, consent_label, quote_status_class, tax_status_class};
 pub use quote_view::QuotePanel;
 pub use settings_view::{SaveState, SettingsView};
-pub use views::{Agenda, LeadForm, Prospects, Section, Shell, Workspace};
+pub use views::{Agenda, ConsentEdit, LeadForm, Prospects, Section, Shell, Workspace};
 
 const STYLE: &str = include_str!("style.css");
 const ICON: &[u8] = include_bytes!("../assets/icon.png");
@@ -110,6 +110,12 @@ pub async fn open_database(path: &Path) -> Result<SqliteLeads, String> {
         .map_err(|error| error.to_string())
 }
 
+/// Runs the automatic backup use case once, as the app does after it opens,
+/// and returns what Settings shows about it.
+pub async fn startup_backup(store: &SqliteLeads) -> String {
+    auto_backup_label(&auto_backup(store, &Context::system(), false).await)
+}
+
 /// What a person changed on one case step.
 enum StepChange {
     Done(bool),
@@ -127,6 +133,7 @@ pub fn App() -> Element {
     let mut form_error = use_signal(String::new);
     let mut settings = use_signal(|| try_consume_context::<Settings>().unwrap_or_default());
     let mut backup_notice = use_signal(String::new);
+    let mut auto_backup_notice = use_signal(String::new);
     let mut save_state = use_signal(SaveState::default);
     let mut pending_restore = use_signal(|| None::<PathBuf>);
     let mut busy = use_signal(|| false);
@@ -195,16 +202,55 @@ pub fn App() -> Element {
 
         match loaded.await {
             Ok((opened, list, open, saved, stored)) => {
+                let backup_store = opened.clone();
                 store.set(Some(opened));
                 leads.set(list);
                 cases.set(open);
                 settings.set(saved);
                 quotes.set(stored);
                 form.set(new_form());
+                // The window is already usable; the copy reports when it ends.
+                spawn(async move {
+                    auto_backup_notice.set(startup_backup(&backup_store).await);
+                    if let Ok(saved) = backup_store.load().await
+                        && saved.last_backup_at() != settings.read().last_backup_at()
+                    {
+                        settings.set(saved);
+                        settings_generation += 1;
+                    }
+                });
             }
             Err(message) => startup_error.set(Some(message)),
         }
     });
+
+    let mut save_consent = move |edit: ConsentEdit| {
+        let Some(repository) = store.read().clone() else {
+            action_error.set("La base de datos todavía no está lista".to_owned());
+            return;
+        };
+
+        saving.set(true);
+        spawn(async move {
+            let saved = async {
+                if edit.revoke {
+                    revoke_consent(&repository, edit.id, &edit.source, today_in_peru()).await?;
+                } else {
+                    record_consent(&repository, edit.id, &edit.source, today_in_peru()).await?;
+                }
+                Ok::<_, AppError>(repository.list().await?)
+            };
+
+            match saved.await {
+                Ok(list) => {
+                    leads.set(list);
+                    action_error.set(String::new());
+                }
+                Err(failure) => action_error.set(failure.to_string()),
+            }
+            saving.set(false);
+        });
+    };
 
     let mut add_from_form = move || {
         let Some(repository) = store.read().clone() else {
@@ -508,6 +554,7 @@ pub fn App() -> Element {
                     database: database_path().map_or_else(|error| error, |path| path.display().to_string()),
                     save_state: save_state(),
                     backup_notice: backup_notice(),
+                    auto_backup_notice: auto_backup_notice(),
                     pending_restore: pending_restore().map(|path: PathBuf| path.display().to_string()),
                     busy: busy(),
                     on_change: move |next: Settings| {
@@ -684,6 +731,12 @@ pub fn App() -> Element {
                     on_new: move |_| {
                         form_error.set(String::new());
                         panel_open.set(true);
+                    },
+                    on_consent: move |edit: ConsentEdit| {
+                        if saving() {
+                            return;
+                        }
+                        save_consent(edit);
                     },
                     on_quote: move |id: Uuid| {
                         quote_error.set(String::new());

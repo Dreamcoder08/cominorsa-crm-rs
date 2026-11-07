@@ -21,6 +21,9 @@ pub fn SettingsView(
     database: String,
     save_state: SaveState,
     backup_notice: String,
+    /// What the automatic backup at startup did.
+    #[props(default)]
+    auto_backup_notice: String,
     pending_restore: Option<String>,
     busy: bool,
     on_change: EventHandler<Settings>,
@@ -42,6 +45,15 @@ pub fn SettingsView(
         move || template
     });
     let mut template_error = use_signal(String::new);
+    let mut interval_text = use_signal({
+        let days = settings.backup_interval_days();
+        move || days.to_string()
+    });
+    let mut keep_text = use_signal({
+        let copies = settings.backup_keep();
+        move || copies.to_string()
+    });
+    let mut automatic_error = use_signal(String::new);
 
     let add_member = {
         let settings = settings.clone();
@@ -60,6 +72,8 @@ pub fn SettingsView(
     };
     let days_settings = settings.clone();
     let template_settings = settings.clone();
+    let interval_settings = settings.clone();
+    let keep_settings = settings.clone();
     let preview = preview_message(&template_text());
     let backup_status = settings.last_backup_at().map_or_else(
         || "Aún no hay copias".to_owned(),
@@ -261,6 +275,80 @@ pub fn SettingsView(
                     }
                     if !backup_notice.is_empty() {
                         p { class: "notice", role: "status", "{backup_notice}" }
+                    }
+                }
+                div { class: "setting-row stacked",
+                    div { class: "setting-info",
+                        h3 { "Copia automática" }
+                        p { "Al abrir la aplicación se copia la base si la última copia es más antigua que el intervalo. Solo se borran las copias más viejas de esta aplicación en esa carpeta." }
+                        if !auto_backup_notice.is_empty() {
+                            p { class: "notice", role: "status", "{auto_backup_notice}" }
+                        }
+                        if !automatic_error().is_empty() {
+                            p { class: "form-error", role: "alert", "{automatic_error}" }
+                        }
+                    }
+                    div { class: "button-row",
+                        label { class: "days-field",
+                            input {
+                                class: "days",
+                                r#type: "number",
+                                min: 1,
+                                max: 30,
+                                aria_label: "Días entre copias automáticas",
+                                value: "{interval_text}",
+                                oninput: move |event| {
+                                    interval_text.set(event.value());
+                                    let mut next = interval_settings.clone();
+                                    let result = event
+                                        .value()
+                                        .parse()
+                                        .map_err(|_| "Escribe un número de 1 a 30".to_owned())
+                                        .and_then(|days| {
+                                            next.set_backup_interval_days(days)
+                                                .map_err(|failure| failure.to_string())
+                                        });
+                                    match result {
+                                        Ok(()) => {
+                                            automatic_error.set(String::new());
+                                            on_change.call(next);
+                                        }
+                                        Err(message) => automatic_error.set(message),
+                                    }
+                                },
+                            }
+                            span { class: "days-unit", "días" }
+                        }
+                        label { class: "days-field",
+                            input {
+                                class: "days",
+                                r#type: "number",
+                                min: 1,
+                                max: 90,
+                                aria_label: "Copias que se conservan",
+                                value: "{keep_text}",
+                                oninput: move |event| {
+                                    keep_text.set(event.value());
+                                    let mut next = keep_settings.clone();
+                                    let result = event
+                                        .value()
+                                        .parse()
+                                        .map_err(|_| "Escribe un número de 1 a 90".to_owned())
+                                        .and_then(|copies| {
+                                            next.set_backup_keep(copies)
+                                                .map_err(|failure| failure.to_string())
+                                        });
+                                    match result {
+                                        Ok(()) => {
+                                            automatic_error.set(String::new());
+                                            on_change.call(next);
+                                        }
+                                        Err(message) => automatic_error.set(message),
+                                    }
+                                },
+                            }
+                            span { class: "days-unit", "copias" }
+                        }
                     }
                 }
                 div { class: "setting-row stacked",

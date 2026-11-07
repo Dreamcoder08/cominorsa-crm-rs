@@ -70,6 +70,13 @@ fn workspace_with_whatsapp() -> Element {
         })
         .unwrap(),
     );
+    // With consent, only the phone decides whether the chat opens.
+    for lead in &mut with_phone {
+        if !lead.has_consent() {
+            lead.record_consent(TODAY, "El cliente inició el contacto")
+                .unwrap();
+        }
+    }
 
     rsx! {
         Workspace {
