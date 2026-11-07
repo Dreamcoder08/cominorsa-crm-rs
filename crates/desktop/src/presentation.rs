@@ -1,7 +1,8 @@
 //! Display rules, kept free of UI framework types so they stay testable.
 
 use cominorsa_domain::{
-    BillingMilestone, Case, CaseFile, CaseStatus, CaseStep, Lead, Money, Stage, renewal_date,
+    BillingMilestone, Case, CaseFile, CaseStatus, CaseStep, CompanyProfile, IgvRate, Lead,
+    MilestoneGap, Money, Quote, QuoteStatus, Stage, accepted_quote, renewal_date,
 };
 use time::{Date, Duration, OffsetDateTime, macros::offset};
 
@@ -359,4 +360,98 @@ pub fn closing_notice(renewal: Option<&Lead>) -> String {
 /// Only closed cases that still owe money stay listed.
 pub fn closed_case_label(case: &Case) -> Option<&'static str> {
     (case.status() == CaseStatus::Closed).then_some("Cerrado, con cobros pendientes")
+}
+
+/// Printed on every quote, because a quote never replaces a tax document.
+pub const QUOTE_TAX_NOTE: &str = "Esta cotización no es un comprobante de pago ni una factura.";
+
+/// The rate as a typed percent, such as `18` or `10.5`.
+pub fn igv_input(rate: IgvRate) -> String {
+    let whole = rate.basis_points() / 100;
+    let decimals = rate.basis_points() % 100;
+
+    match decimals {
+        0 => whole.to_string(),
+        decimals if decimals.is_multiple_of(10) => format!("{whole}.{}", decimals / 10),
+        decimals => format!("{whole}.{decimals:02}"),
+    }
+}
+
+pub fn format_igv_rate(rate: IgvRate) -> String {
+    format!("{}%", igv_input(rate))
+}
+
+pub fn igv_label(rate: IgvRate) -> String {
+    format!("IGV ({})", format_igv_rate(rate))
+}
+
+pub fn quote_file_name(quote: &Quote) -> String {
+    format!("{}.pdf", quote.number())
+}
+
+/// The header lines of a quote below the company name. Blank fields are left out.
+pub fn company_lines(company: &CompanyProfile) -> Vec<String> {
+    let fields = [
+        ("RUC ", company.ruc.as_str()),
+        ("", company.address.as_str()),
+        ("Tel. ", company.phone.as_str()),
+        ("", company.email.as_str()),
+    ];
+
+    fields
+        .into_iter()
+        .filter(|(_, value)| !value.trim().is_empty())
+        .map(|(label, value)| format!("{label}{}", value.trim()))
+        .collect()
+}
+
+pub fn company_warning(company: &CompanyProfile) -> Option<&'static str> {
+    (!company.has_name())
+        .then_some("Falta el nombre de la empresa. Agrégalo en Configuración antes de emitir.")
+}
+
+pub fn quote_status_class(status: QuoteStatus) -> &'static str {
+    match status {
+        QuoteStatus::Draft => "upcoming",
+        QuoteStatus::Sent => "today",
+        QuoteStatus::Accepted => "closed",
+        QuoteStatus::Rejected => "overdue",
+    }
+}
+
+pub fn milestone_gap_warning(file: &CaseFile) -> Option<String> {
+    let (word, amount) = match file.milestone_gap()? {
+        MilestoneGap::Short(amount) => ("faltan", amount),
+        MilestoneGap::Over(amount) => ("sobran", amount),
+    };
+    let total = file.case.contract_total()?;
+
+    Some(format!(
+        "Los hitos suman {} y el contrato {}: {word} {}.",
+        format_soles(file.milestones_total()),
+        format_soles(total),
+        format_soles(amount)
+    ))
+}
+
+/// Names the quote behind the contract total, while the total still matches it.
+pub fn suggested_total_note(file: &CaseFile, quotes: &[Quote]) -> Option<String> {
+    accepted_quote(quotes, file.case.lead_id())
+        .filter(|quote| file.case.contract_total() == Some(quote.totals().total))
+        .map(|quote| {
+            format!(
+                "Sugerido por {}; ajústalo si el contrato difiere.",
+                quote.number()
+            )
+        })
+}
+
+pub fn accepted_notice(quote: &Quote, case_is_open: bool) -> String {
+    let next = if case_is_open {
+        "El expediente ya está abierto: revisa su total en Cobros."
+    } else {
+        "Su total se sugerirá al abrir el expediente."
+    };
+
+    format!("{} aceptada. {next}", quote.number())
 }

@@ -5,8 +5,8 @@ use dioxus::prelude::*;
 use time::Date;
 
 use crate::{
-    BillingEdit, FollowUp, MilestoneValues, format_soles, milestone_status_label, money_input,
-    views::STEP_DATE_NOTE,
+    BillingEdit, FollowUp, MilestoneValues, format_soles, milestone_gap_warning,
+    milestone_status_label, money_input, views::STEP_DATE_NOTE,
 };
 
 const NO_INVOICES_NOTE: &str = "Registra cobros; no emite facturas ni comprobantes.";
@@ -18,11 +18,13 @@ pub fn BillingPanel(
     file: CaseFile,
     today: Date,
     saving: bool,
+    #[props(default)] total_note: Option<String>,
     draft: MilestoneValues,
     on_draft: EventHandler<MilestoneValues>,
     on_edit: EventHandler<BillingEdit>,
 ) -> Element {
     let summary = BillingSummary::of(&file);
+    let gap_warning = milestone_gap_warning(&file);
     let total_label = summary
         .total
         .map_or_else(|| UNDEFINED_TOTAL.to_owned(), format_soles);
@@ -45,6 +47,12 @@ pub fn BillingPanel(
                 div { dt { "Total del contrato" } dd { "{total_label}" } }
                 div { dt { "Cobrado" } dd { "{format_soles(summary.collected)}" } }
                 div { dt { "Pendiente" } dd { "{format_soles(summary.pending)}" } }
+            }
+            if let Some(note) = total_note {
+                p { class: "muted-note billing-note", "{note}" }
+            }
+            if let Some(warning) = gap_warning {
+                p { class: "warning-note billing-note", role: "status", "{warning}" }
             }
             label { class: "step-date billing-total",
                 span { "Editar total en soles" }

@@ -92,6 +92,7 @@ pub fn CaseDetail(
     saving: bool,
     error: String,
     #[props(default)] notice: String,
+    #[props(default)] total_note: Option<String>,
     #[props(default)] confirming_close: bool,
     #[props(default)] on_close: EventHandler<CloseStep>,
     #[props(default)] draft: MilestoneValues,
@@ -169,7 +170,7 @@ pub fn CaseDetail(
                 }
             }
         }
-        BillingPanel { file, today, saving, draft, on_draft, on_edit: on_billing }
+        BillingPanel { file, today, saving, total_note, draft, on_draft, on_edit: on_billing }
     }
 }
 

@@ -246,6 +246,22 @@ details .path { margin-top: var(--space-2); }
 .panel form { display: grid; gap: var(--space-3); }
 .panel label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; font-weight: 600; }
 
+/* Quotes */
+.panel.quote-panel { width: min(600px, 100vw); }
+.quote-panel h3 { font-size: 13px; font-weight: 600; }
+.quote-panel .muted-note, .quote-panel .warning-note, .quote-panel .notice { margin-bottom: var(--space-3); }
+.quote-list { display: grid; gap: var(--space-2); margin-bottom: var(--space-4); }
+.quote-row { display: grid; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-m); }
+.quote-title { display: flex; flex-wrap: wrap; gap: var(--space-2); justify-content: space-between; align-items: center; }
+.quote-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.quote-line { display: grid; grid-template-columns: minmax(0, 1fr) 64px 110px auto; gap: var(--space-2); align-items: end; }
+.quote-dates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
+.quote-totals { display: grid; gap: var(--space-1); margin: 0; padding: var(--space-3); border-radius: var(--radius-m); background: var(--subtle); font-variant-numeric: tabular-nums; }
+.quote-totals div { display: flex; justify-content: space-between; }
+.quote-totals dd { margin: 0; font-weight: 600; }
+.company-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-3); }
+.warning-note { padding: var(--space-2) 10px; border-radius: var(--radius-s); background: var(--today-soft); color: var(--today); font-size: 13px; font-weight: 600; }
+
 /* Tablet: icon rail */
 @media (max-width: 1080px) {
   .shell { grid-template-columns: 60px minmax(0, 1fr); }
@@ -280,6 +296,8 @@ details .path { margin-top: var(--space-2); }
   .setting-row { flex-direction: column; align-items: stretch; }
   .step-row { flex-direction: column; align-items: stretch; }
   .step-side { justify-content: space-between; }
+  .quote-line { grid-template-columns: minmax(0, 1fr) 64px 110px; }
+  .quote-line .description { grid-column: 1 / -1; }
   .search { max-width: none; }
   .metrics { grid-template-columns: repeat(2, 1fr); }
   .metric:nth-child(3) { border-left: 0; }

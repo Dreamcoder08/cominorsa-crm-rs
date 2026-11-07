@@ -1,6 +1,6 @@
 # COMINORSA CRM
 
-Local desktop CRM written in Rust. It registers leads, moves them through the sales pipeline, searches them, shows an agenda of follow-ups, case steps, and collections, and keeps a searchable prospect list that converts into leads. Advancing a lead to "Contrato firmado" opens one case in "Expedientes", with procedure steps you mark done and date. Each step date is a suggestion to adjust, labeled "Fecha sugerida, ajústala". A service that names several procedures, such as "IGAFOM + REINFO", combines their steps in the order of the text. Each case tracks its collections: contract total, billing milestones with an optional suggested 30 / 40 / 30 plan, and collected and pending amounts in soles. Unpaid milestones appear in the agenda as "Cobro". Closing a case is an explicit action with confirmation; a recurring service creates one renewal lead in the first stage, marked "Cliente existente", and sending any message stays a human action. Lead cards open a prepared WhatsApp chat that a person reviews and sends. Each lead can have a responsible person from the team list. Settings cover the theme, team, default follow-up days, the WhatsApp message with a preview, and backup and restore. Valid changes save automatically and report their state.
+Local desktop CRM written in Rust. It registers leads, moves them through the sales pipeline, searches them, shows an agenda of follow-ups, case steps, and collections, and keeps a searchable prospect list that converts into leads. Advancing a lead to "Contrato firmado" opens one case in "Expedientes", with procedure steps you mark done and date. Each step date is a suggestion to adjust, labeled "Fecha sugerida, ajústala". A service that names several procedures, such as "IGAFOM + REINFO", combines their steps in the order of the text. Each case tracks its collections: contract total, billing milestones with an optional suggested 30 / 40 / 30 plan, and collected and pending amounts in soles. Unpaid milestones appear in the agenda as "Cobro", and the case warns when milestones do not add up to the contract total. A lead card opens "Cotizar": numbered quotes such as COT-2026-0001 with lines, IGV, and a preview of totals, saved as a PDF to a file you choose. A sent quote never changes; changing it means a new version, such as COT-2026-0001-V2. Marking a quote accepted makes its total the suggested contract total when the case opens. Closing a case is an explicit action with confirmation; a recurring service creates one renewal lead in the first stage, marked "Cliente existente", and sending any message stays a human action. Lead cards open a prepared WhatsApp chat that a person reviews and sends. Each lead can have a responsible person from the team list. Settings cover the theme, team, default follow-up days, the company data and IGV rate for quotes, the WhatsApp message with a preview, and backup and restore. Valid changes save automatically and report their state.
 
 ## Quick path
 
@@ -28,6 +28,14 @@ RC=llvm-windres RC_x86_64_pc_windows_gnu=llvm-windres cargo zigbuild --release -
 ## App icon
 
 `crates/desktop/assets` holds the icon, redrawn from the COMINORSA logo. The window and sidebar embed it, `build.rs` adds `icon.ico` to the Windows executable, and `scripts/install-linux-launcher.sh` adds the Linux launcher.
+
+## Quotes
+
+Totals use integer cents. Unit prices exclude IGV. A line is quantity times unit price, and IGV is charged once on the subtotal, rounding half a cent up. Each year numbers restart at 0001; the number comes from a counter inside the transaction that saves the quote, so a failed save gives it back.
+
+A draft PDF says "Borrador" and uses the current company data. Marking a quote as sent freezes that data on it. A blank company field is left out of the document, and the app asks before sending a quote without a company name. Every page states that the quote is not a tax receipt or invoice; the app issues no SUNAT documents.
+
+`crates/desktop/assets/fonts` embeds Noto Sans Regular and Bold under the SIL Open Font License, in `OFL.txt` beside them. PDF fonts are subset, so a one-page quote weighs about 23 KB.
 
 ## Import prospects
 
@@ -70,6 +78,7 @@ Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adap
 | RUC validation | Offline format and check digit only; it does not prove the RUC exists at SUNAT |
 | Pipeline stages and lead fields | Assumptions pending client validation |
 | Case steps | Titles and day offsets are planning suggestions pending client validation; legal deadlines are never stored in code |
+| Quotes | Not tax documents. The 18% IGV default, the 15-day suggested validity, and whole-number quantities are unvalidated assumptions; marking a quote sent does not move the lead's stage |
 | Billing | Tracks collections only; it does not issue tax invoices or receipts. The 30 / 40 / 30 split comes from an unvalidated example |
 | Renewals | Only DAC suggests a renewal, 12 months after closing, pending client validation; a service naming DAC with others renews as a whole. A closed case with unpaid milestones stays listed until they are paid |
 | Follow-up alerts | Visible only while the app is open |

@@ -309,6 +309,7 @@ pub fn Workspace(
     on_new: EventHandler<()>,
     on_advance: EventHandler<Uuid>,
     on_assign: EventHandler<(Uuid, String)>,
+    #[props(default)] on_quote: EventHandler<Uuid>,
 ) -> Element {
     let summary = PipelineSummary::of(&leads, today);
     let is_empty = leads.is_empty();
@@ -358,7 +359,7 @@ pub fn Workspace(
                         p { "Prueba con otro nombre, RUC, teléfono o servicio." }
                     }
                 } else {
-                    Board { leads: visible, today, whatsapp_template, team, on_advance, on_assign }
+                    Board { leads: visible, today, whatsapp_template, team, on_advance, on_assign, on_quote }
                 }
     }
 }
@@ -381,6 +382,7 @@ fn Board(
     team: Vec<String>,
     on_advance: EventHandler<Uuid>,
     on_assign: EventHandler<(Uuid, String)>,
+    on_quote: EventHandler<Uuid>,
 ) -> Element {
     rsx! {
         section { class: "board", aria_label: "Etapas del embudo",
@@ -409,6 +411,7 @@ fn Board(
                                         lead,
                                         on_advance,
                                         on_assign,
+                                        on_quote,
                                     }
                                 }
                                 if count == 0 {
@@ -431,6 +434,7 @@ fn LeadCard(
     owners: Vec<String>,
     on_advance: EventHandler<Uuid>,
     on_assign: EventHandler<(Uuid, String)>,
+    on_quote: EventHandler<Uuid>,
 ) -> Element {
     let id = lead.id();
 
@@ -473,6 +477,12 @@ fn LeadCard(
                             aria_label: "Preparar mensaje de WhatsApp para {lead.name()}",
                             "WhatsApp"
                         }
+                    }
+                    button {
+                        class: "secondary",
+                        aria_label: "Cotizaciones de {lead.client_name()}",
+                        onclick: move |_| on_quote.call(id),
+                        "Cotizar"
                     }
                     if lead.stage() != Stage::ContractSigned {
                         button {

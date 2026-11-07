@@ -1,10 +1,10 @@
 //! Settings section. Rules live in the domain; this view only calls them.
 //! Valid changes save automatically and every section reports the same state.
 
-use cominorsa_domain::{Settings, ThemePreference, render_message};
+use cominorsa_domain::{CompanyProfile, IgvRate, Settings, ThemePreference, render_message};
 use dioxus::prelude::*;
 
-use crate::format_timestamp;
+use crate::{format_timestamp, igv_input};
 
 const PREVIEW_NAME: &str = "Minera Ejemplo";
 const PREVIEW_SERVICE: &str = "REINFO";
@@ -235,6 +235,9 @@ pub fn SettingsView(
                     }
                 }
             }
+            SettingsGroup { title: "Empresa y cotizaciones",
+                CompanySection { settings: settings.clone(), on_change }
+            }
             SettingsGroup { title: "Datos",
                 div { class: "setting-row stacked",
                     div { class: "setting-info",
@@ -308,6 +311,122 @@ pub fn SettingsView(
                         p { "Versión {env!(\"CARGO_PKG_VERSION\")}" }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// The quote header and the IGV rate. Nothing is prefilled; a blank field is
+/// left out of the quote.
+#[component]
+fn CompanySection(settings: Settings, on_change: EventHandler<Settings>) -> Element {
+    let mut company = use_signal({
+        let company = settings.company().clone();
+        move || company
+    });
+    let mut company_error = use_signal(String::new);
+    let mut igv_text = use_signal({
+        let rate = igv_input(settings.igv_rate());
+        move || rate
+    });
+    let mut igv_error = use_signal(String::new);
+    let igv_settings = settings.clone();
+    let edit = |update: fn(&mut CompanyProfile, String)| {
+        let settings = settings.clone();
+        move |event: FormEvent| {
+            let mut typed = company();
+            update(&mut typed, event.value());
+            company.set(typed.clone());
+            let mut next = settings.clone();
+            match next.set_company(typed) {
+                Ok(()) => {
+                    company_error.set(String::new());
+                    on_change.call(next);
+                }
+                Err(failure) => company_error.set(failure.to_string()),
+            }
+        }
+    };
+
+    rsx! {
+        div { class: "setting-row stacked",
+            div { class: "setting-info",
+                h3 { "Datos para la cotización" }
+                p { "Lo que dejes en blanco no aparece en el documento." }
+            }
+            div { class: "company-fields",
+                label { class: "step-date",
+                    span { "Nombre de la empresa" }
+                    input {
+                        value: "{company.read().name}",
+                        oninput: edit(|values, text| values.name = text),
+                    }
+                }
+                label { class: "step-date",
+                    span { "RUC de la empresa" }
+                    input {
+                        inputmode: "numeric",
+                        maxlength: 11,
+                        value: "{company.read().ruc}",
+                        oninput: edit(|values, text| values.ruc = text),
+                    }
+                }
+                label { class: "step-date",
+                    span { "Dirección" }
+                    input {
+                        value: "{company.read().address}",
+                        oninput: edit(|values, text| values.address = text),
+                    }
+                }
+                label { class: "step-date",
+                    span { "Teléfono de la empresa" }
+                    input {
+                        r#type: "tel",
+                        value: "{company.read().phone}",
+                        oninput: edit(|values, text| values.phone = text),
+                    }
+                }
+                label { class: "step-date",
+                    span { "Correo de la empresa" }
+                    input {
+                        r#type: "email",
+                        value: "{company.read().email}",
+                        oninput: edit(|values, text| values.email = text),
+                    }
+                }
+            }
+            if !company_error().is_empty() {
+                p { class: "form-error", role: "alert", "{company_error}" }
+            }
+        }
+        div { class: "setting-row",
+            div { class: "setting-info",
+                h3 { "IGV" }
+                p { "Por revisar: confirma la tasa con tu contador." }
+                if !igv_error().is_empty() {
+                    p { class: "form-error", role: "alert", "{igv_error}" }
+                }
+            }
+            label { class: "days-field",
+                input {
+                    class: "days",
+                    inputmode: "decimal",
+                    aria_label: "Tasa de IGV en porcentaje",
+                    value: "{igv_text}",
+                    oninput: move |event| {
+                        igv_text.set(event.value());
+                        match IgvRate::parse(&event.value()) {
+                            Ok(rate) => {
+                                let mut next = igv_settings.clone();
+                                next.set_igv_rate(rate);
+                                igv_error.set(String::new());
+                                on_change.call(next);
+                            }
+                            Err(failure) => igv_error.set(failure.to_string()),
+                        }
+                    },
+                }
+                span { class: "days-unit", "%" }
             }
         }
     }

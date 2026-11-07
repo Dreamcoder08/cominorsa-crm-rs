@@ -15,7 +15,10 @@ dioxus = { version = "0.7", default-features = false, features = ["desktop", "ho
 dioxus-ssr = "0.7"
 directories = "6"
 embed-resource = "3"
+krilla = { version = "0.8", default-features = false, features = ["simple-text"] }
 rfd = "0.17"
+# Same minor as krilla, so the font parser is compiled once.
+skrifa = "0.42"
 sqlx = { version = "0.9", default-features = false, features = ["macros", "migrate", "runtime-tokio", "sqlite"] }
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "macros", "parsing"] }

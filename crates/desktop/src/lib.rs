@@ -5,13 +5,16 @@ use std::{env, fs, path::PathBuf};
 mod billing_view;
 mod cases_view;
 mod presentation;
+mod quote_flow;
+mod quote_pdf;
+mod quote_view;
 mod settings_view;
 mod views;
 
 use cominorsa_domain::{
     BillingMilestone, BillingRepository, Case, CaseClosure, CaseFile, CaseRepository, CaseStep,
     DomainError, Lead, LeadRepository, Money, NewLead, NewMilestone, Prospect, ProspectRepository,
-    Settings, SettingsRepository, Stage, procedure_template,
+    Quote, QuoteRepository, Settings, SettingsRepository, Stage, procedure_template,
 };
 use cominorsa_storage::SqliteLeads;
 use dioxus::{
@@ -29,11 +32,19 @@ use uuid::Uuid;
 pub use billing_view::BillingPanel;
 pub use cases_view::{CaseDetail, Cases, CloseStep};
 pub use presentation::{
-    AgendaGroups, AgendaItem, FollowUp, PipelineSummary, case_progress, close_warning,
-    closed_case_label, closing_notice, format_date, format_soles, format_timestamp, matches_query,
-    milestone_status_label, money_input, next_follow_up, owner_options, profile_label,
-    renewal_note, responsible_label, step_status_label, tax_status_class,
+    AgendaGroups, AgendaItem, FollowUp, PipelineSummary, QUOTE_TAX_NOTE, accepted_notice,
+    case_progress, close_warning, closed_case_label, closing_notice, company_lines,
+    company_warning, format_date, format_igv_rate, format_soles, format_timestamp, igv_input,
+    igv_label, matches_query, milestone_gap_warning, milestone_status_label, money_input,
+    next_follow_up, owner_options, profile_label, quote_file_name, quote_status_class,
+    renewal_note, responsible_label, step_status_label, suggested_total_note, tax_status_class,
 };
+pub use quote_flow::{
+    QuoteChange, QuoteEdit, QuoteLineValues, QuoteValues, lead_quotes, quote_change, quote_notice,
+    quote_preview, save_quote,
+};
+pub use quote_pdf::{quote_pdf, write_pdf};
+pub use quote_view::QuotePanel;
 pub use settings_view::{SaveState, SettingsView};
 pub use views::{Agenda, LeadForm, Prospects, Section, Shell, Workspace};
 
@@ -242,10 +253,11 @@ pub fn parse_step_date(value: &str) -> Result<Date, String> {
 }
 
 /// Saves one pipeline move. Reaching the final stage opens the case in the same
-/// atomic operation, with suggested step dates counted from `today`.
+/// atomic operation, with suggested step dates counted from `today` and the
+/// total of an accepted quote as the suggested contract total.
 pub async fn save_advance<R>(repository: &R, mut lead: Lead, today: Date) -> Result<(), String>
 where
-    R: LeadRepository + CaseRepository,
+    R: LeadRepository + CaseRepository + QuoteRepository,
 {
     lead.advance().map_err(|error| error.to_string())?;
 
@@ -257,7 +269,14 @@ where
     }
 
     let template = procedure_template(lead.service());
-    let opening = CaseFile::open(&lead, today, &template).map_err(|error| error.to_string())?;
+    let mut opening = CaseFile::open(&lead, today, &template).map_err(|error| error.to_string())?;
+    let quotes = repository
+        .quotes()
+        .await
+        .map_err(|error| error.to_string())?;
+    opening
+        .suggest_total_from(&quotes)
+        .map_err(|error| error.to_string())?;
 
     repository
         .sign_and_open(&lead, &opening)
@@ -370,6 +389,12 @@ pub fn App() -> Element {
     let mut milestone_draft = use_signal(|| MilestoneValues::starting_on(today_in_peru()));
     let mut confirming_close = use_signal(|| false);
     let mut case_notice = use_signal(String::new);
+    let mut quotes = use_signal(Vec::<Quote>::new);
+    let mut quote_lead = use_signal(|| None::<Uuid>);
+    let mut quote_values = use_signal(|| QuoteValues::starting_on(today_in_peru()));
+    let mut quote_error = use_signal(String::new);
+    let mut quote_notice_text = use_signal(String::new);
+    let mut confirming_send = use_signal(|| None::<Uuid>);
     let selected_file = move || {
         selected_case().and_then(|id| {
             cases
@@ -407,15 +432,17 @@ pub fn App() -> Element {
                 .await
                 .map_err(|error| error.to_string())?;
             let saved = opened.load().await.map_err(|error| error.to_string())?;
-            Ok::<_, String>((opened, list, open, saved))
+            let stored = opened.quotes().await.map_err(|error| error.to_string())?;
+            Ok::<_, String>((opened, list, open, saved, stored))
         };
 
         match loaded.await {
-            Ok((opened, list, open, saved)) => {
+            Ok((opened, list, open, saved, stored)) => {
                 store.set(Some(opened));
                 leads.set(list);
                 cases.set(open);
                 settings.set(saved);
+                quotes.set(stored);
                 form.set(new_form());
             }
             Err(message) => startup_error.set(Some(message)),
@@ -574,6 +601,94 @@ pub fn App() -> Element {
         });
     };
 
+    let mut save_quote_edit = move |lead: Lead, edit: QuoteEdit| {
+        let Some(repository) = store.read().clone() else {
+            quote_error.set("La base de datos todavía no está lista".to_owned());
+            return;
+        };
+        let change = quote_change(
+            &lead,
+            edit.clone(),
+            &quote_values.read(),
+            &quotes.read(),
+            &settings.read(),
+            today_in_peru(),
+        );
+        let change = match change {
+            Ok(change) => change,
+            Err(message) => {
+                quote_error.set(message);
+                return;
+            }
+        };
+        let case_is_open = cases
+            .read()
+            .iter()
+            .any(|file| file.case.lead_id() == lead.id());
+
+        saving.set(true);
+        spawn(async move {
+            let saved = async {
+                let quote = save_quote(&repository, change).await?;
+                let list = repository
+                    .quotes()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok::<_, String>((quote, list))
+            };
+
+            match saved.await {
+                Ok((quote, list)) => {
+                    quotes.set(list);
+                    quote_error.set(String::new());
+                    quote_notice_text.set(quote_notice(&edit, &quote, case_is_open));
+                    confirming_send.set(None);
+                    match edit {
+                        QuoteEdit::Save => {
+                            quote_values.set(QuoteValues::starting_on(today_in_peru()));
+                        }
+                        QuoteEdit::NewVersion(_) => quote_values.set(QuoteValues::of_quote(&quote)),
+                        _ => {}
+                    }
+                }
+                Err(failure) => quote_error.set(failure),
+            }
+            saving.set(false);
+        });
+    };
+
+    let mut save_pdf = move |quote: Quote| {
+        let company = settings.read().company().clone();
+        let bytes = match quote_pdf(&quote, quote.document_company(&company)) {
+            Ok(bytes) => bytes,
+            Err(message) => {
+                quote_error.set(message);
+                return;
+            }
+        };
+
+        saving.set(true);
+        spawn(async move {
+            let picked = rfd::AsyncFileDialog::new()
+                .set_title("Guardar cotización en PDF")
+                .set_file_name(quote_file_name(&quote))
+                .add_filter("PDF", &["pdf"])
+                .save_file()
+                .await;
+
+            if let Some(file) = picked {
+                match write_pdf(file.path(), &bytes) {
+                    Ok(path) => {
+                        quote_error.set(String::new());
+                        quote_notice_text.set(format!("PDF guardado en {}", path.display()));
+                    }
+                    Err(failure) => quote_error.set(failure),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
     let mut save_settings = move |next: Settings| {
         settings.set(next.clone());
         let Some(repository) = store.read().clone() else {
@@ -677,14 +792,16 @@ pub fn App() -> Element {
                                 let list = reopened.list().await.map_err(|error| error.to_string())?;
                                 let open = reopened.active_cases().await.map_err(|error| error.to_string())?;
                                 let saved = reopened.load().await.map_err(|error| error.to_string())?;
-                                Ok::<_, String>((reopened, list, open, saved))
+                                let stored = reopened.quotes().await.map_err(|error| error.to_string())?;
+                                Ok::<_, String>((reopened, list, open, saved, stored))
                             };
 
                             match restored.await {
-                                Ok((reopened, list, open, saved)) => {
+                                Ok((reopened, list, open, saved, stored)) => {
                                     store.set(Some(reopened));
                                     leads.set(list);
                                     cases.set(open);
+                                    quotes.set(stored);
                                     selected_case.set(None);
                                     settings.set(saved);
                                     settings_generation += 1;
@@ -714,6 +831,7 @@ pub fn App() -> Element {
             } else if section() == Section::Cases {
                 if let Some(file) = selected_file() {
                     CaseDetail {
+                        total_note: suggested_total_note(&file, &quotes.read()),
                         file,
                         today: today_in_peru(),
                         saving: saving(),
@@ -799,6 +917,13 @@ pub fn App() -> Element {
                         form_error.set(String::new());
                         panel_open.set(true);
                     },
+                    on_quote: move |id: Uuid| {
+                        quote_error.set(String::new());
+                        quote_notice_text.set(String::new());
+                        confirming_send.set(None);
+                        quote_values.set(QuoteValues::starting_on(today_in_peru()));
+                        quote_lead.set(Some(id));
+                    },
                     on_advance: move |id: Uuid| {
                         if saving() {
                             return;
@@ -851,6 +976,36 @@ pub fn App() -> Element {
                     }
                 },
                 on_close: move |_| panel_open.set(false),
+            }
+        }
+        if let Some(lead) = quote_lead().and_then(|id| leads.read().iter().find(|lead| lead.id() == id).cloned()) {
+            QuotePanel {
+                quotes: lead_quotes(&quotes.read(), lead.id()),
+                lead: lead.clone(),
+                values: quote_values(),
+                company: settings.read().company().clone(),
+                igv_rate: settings.read().igv_rate(),
+                saving: saving(),
+                error: quote_error(),
+                notice: quote_notice_text(),
+                confirming_send: confirming_send(),
+                on_change: move |values| quote_values.set(values),
+                on_edit: move |edit: QuoteEdit| {
+                    if !saving() {
+                        save_quote_edit(lead.clone(), edit);
+                    }
+                },
+                on_load: move |quote: Quote| {
+                    quote_error.set(String::new());
+                    quote_values.set(QuoteValues::of_quote(&quote));
+                },
+                on_pdf: move |quote: Quote| {
+                    if !saving() {
+                        save_pdf(quote);
+                    }
+                },
+                on_confirm_send: move |id: Option<Uuid>| confirming_send.set(id),
+                on_close: move |_| quote_lead.set(None),
             }
         }
         }
