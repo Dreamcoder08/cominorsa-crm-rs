@@ -377,3 +377,80 @@ async fn refuses_to_restore_an_invalid_file_and_keeps_current_data() {
     let reopened = SqliteLeads::open(&database.path()).await.unwrap();
     assert_eq!(reopened.list().await.unwrap(), vec![saved]);
 }
+
+async fn write_unrelated_database(path: &std::path::Path) {
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true);
+    let pool = SqlitePool::connect_with(options).await.unwrap();
+    sqlx::query("CREATE TABLE notes (body TEXT)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn refuses_to_restore_files_without_crm_data() {
+    let database = TempDatabase::new();
+    let store = SqliteLeads::open(&database.path()).await.unwrap();
+    let saved = lead("Actual", date!(2026 - 11 - 01));
+    store.save(&saved).await.unwrap();
+    store.close().await;
+
+    let empty = database.0.join("empty.db");
+    fs::write(&empty, "").unwrap();
+    let unrelated = database.0.join("unrelated.db");
+    write_unrelated_database(&unrelated).await;
+    let safety = database.0.join("safety.db");
+
+    for candidate in [&empty, &unrelated] {
+        let store = SqliteLeads::open(&database.path()).await.unwrap();
+
+        assert!(
+            store
+                .clone()
+                .restore(&database.path(), candidate, &safety)
+                .await
+                .is_err(),
+            "{candidate:?} must be refused"
+        );
+        store.close().await;
+    }
+
+    assert!(!safety.exists());
+    let reopened = SqliteLeads::open(&database.path()).await.unwrap();
+    assert_eq!(reopened.list().await.unwrap(), vec![saved]);
+    assert!(!database.path().with_extension("restoring.db").exists());
+}
+
+#[tokio::test]
+async fn loads_templates_saved_before_placeholder_validation() {
+    let database = TempDatabase::new();
+    let store = SqliteLeads::open(&database.path()).await.unwrap();
+    let options = SqliteConnectOptions::new().filename(database.path());
+    let raw = SqlitePool::connect_with(options).await.unwrap();
+    sqlx::query("INSERT INTO settings VALUES ('whatsapp_template', 'Hola {cliente}')")
+        .execute(&raw)
+        .await
+        .unwrap();
+    raw.close().await;
+
+    let loaded = store.load().await.unwrap();
+
+    assert_eq!(loaded.whatsapp_template(), "Hola {cliente}");
+}
+
+#[tokio::test]
+async fn forgets_backup_settings_that_were_cleared() {
+    let database = TempDatabase::new();
+    let store = SqliteLeads::open(&database.path()).await.unwrap();
+    let mut settings = Settings::default();
+    settings.set_backup_directory("/media/usb");
+    store.persist(&settings).await.unwrap();
+
+    settings.set_backup_directory("   ");
+    store.persist(&settings).await.unwrap();
+
+    assert_eq!(store.load().await.unwrap().backup_directory(), None);
+}

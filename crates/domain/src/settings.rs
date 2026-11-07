@@ -107,6 +107,14 @@ impl Settings {
         Ok(())
     }
 
+    /// Rehydrates a stored template. Validation applies to edits only, so a
+    /// template saved under older rules still loads and can be corrected.
+    pub fn restore_whatsapp_template(&mut self, template: String) {
+        if !template.trim().is_empty() {
+            self.whatsapp_template = template;
+        }
+    }
+
     pub fn whatsapp_template(&self) -> &str {
         &self.whatsapp_template
     }

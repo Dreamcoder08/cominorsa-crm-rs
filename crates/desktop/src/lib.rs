@@ -172,6 +172,7 @@ pub fn App() -> Element {
     let mut save_state = use_signal(SaveState::default);
     let mut pending_restore = use_signal(|| None::<PathBuf>);
     let mut busy = use_signal(|| false);
+    let mut settings_generation = use_signal(|| 0_u32);
     let new_form = move || {
         FormValues::starting_on(next_follow_up(
             today_in_peru(),
@@ -272,6 +273,7 @@ pub fn App() -> Element {
             on_section: move |next| section.set(next),
             if section() == Section::Settings {
                 SettingsView {
+                    key: "{settings_generation}",
                     settings: settings(),
                     database: database_path().map_or_else(|error| error, |path| path.display().to_string()),
                     save_state: save_state(),
@@ -349,6 +351,7 @@ pub fn App() -> Element {
                                     store.set(Some(reopened));
                                     leads.set(list);
                                     settings.set(saved);
+                                    settings_generation += 1;
                                     backup_notice.set("Copia restaurada".to_owned());
                                 }
                                 Err(failure) => backup_notice.set(format!("No se pudo restaurar: {failure}")),
