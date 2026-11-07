@@ -49,7 +49,7 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - [x] T10. S18, S19: owner migration, backup settings, restore, and template rules. Route: inline. Risk: item 1. Commit: 71f2dcd.
 - [x] T11. S18-S22: desktop behavior and redesign. Route: inline. Commit: 1cbbe48.
 - [x] T12. S23: tax data migration, importer enrichment, and prospect view. Route: inline. Risk: item 1. Commits: 825f906, 949fe9b.
-- [ ] T13. S24, S25: cases, steps, and Agenda deadlines. Route: delegated, context backstop. Risk: item 1. Commit: pending.
+- [x] T13. S24, S25: cases, steps, and Agenda deadlines. Route: delegated, context backstop. Risk: item 1. Commits: bce58f7, 4cff2d5.
 - [ ] T14. S26, S28: billing milestones and renewals. Route: delegated, context backstop. Risk: item 1. Commit: pending.
 - [ ] T15. S27: quote PDF. Route: delegated, context backstop. Risk: item 1. Commit: pending.
 
@@ -87,3 +87,4 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - L28 (2026-11-06): SUNAT roll published 2026-11-06 has no phone or email columns. Companies: 436 exact, 30 approximate, 9 ambiguous, 324 without match; 376 active. The output file stays outside the repository.
 - L29 (2026-11-07, user request, verbatim): "imnplementa esto ademas si tienes dudas mira a la competencia aqui en piura o peru o en laitnoametica o como lo hacen los mejores del mundo china , usa y mas". Research found the case-centered pattern in Clio; no usable evidence on Feishu, DingTalk, or Peruvian mining-consultancy software.
 - Delivery forecast: about 1500 more authored lines. Commits stay on the feature branch; no pull request was requested.
+- L30 (2026-11-07): T13 done in bce58f7 and 4cff2d5. `scripts/check.sh` passed with 121 tests. RED: compile failures, then assertion failures against stubbed and mutated code (no transaction, no idempotence, no status filter, no restore validation). Migration 0006 survived a schema-5 database with synthetic rows, in tests and in one app run. Importer output matches 4cb0726 except the backup timestamp. Window clicks were not exercised. Open points: leads signed before T13 have no case; the case owner is a snapshot, so a later change on the lead card does not reach it; a service naming two procedures, such as "IGAFOM + REINFO", uses the first template (REINFO). Template titles and offsets await client validation.
