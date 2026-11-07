@@ -304,6 +304,13 @@ impl QuoteDraft {
         })
     }
 
+    /// The same draft under an id chosen by the caller, for reproducible runs.
+    #[must_use]
+    pub fn with_id(mut self, id: Uuid) -> Self {
+        self.id = id;
+        self
+    }
+
     pub fn id(&self) -> Uuid {
         self.id
     }

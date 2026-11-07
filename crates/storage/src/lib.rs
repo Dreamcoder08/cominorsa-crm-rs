@@ -11,6 +11,7 @@ use cominorsa_domain::{
 };
 use sqlx::{
     Row, Sqlite, SqliteExecutor, SqlitePool, Transaction,
+    migrate::Migrator,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow},
 };
 use time::{Date, format_description::well_known::Iso8601};
@@ -66,6 +67,13 @@ const SELECT_ACTIVE_CASE_STEPS: &str = "SELECT step.id, step.case_id, step.posit
     WHERE parent.status = 'open' OR EXISTS (SELECT 1 FROM billing_milestones AS item
         WHERE item.case_id = parent.id AND item.paid_on IS NULL)
     ORDER BY step.case_id, step.position";
+
+const SELECT_ALL_CASES: &str = "SELECT id, lead_id, client_name, ruc, service, owner, opened_on,
+        status, contract_total_cents
+    FROM cases ORDER BY opened_on, id";
+
+const SELECT_ALL_CASE_STEPS: &str = "SELECT id, case_id, position, title, due_on, done_on
+    FROM case_steps ORDER BY case_id, position";
 
 const CLOSE_CASE: &str = "UPDATE cases SET status = ?2 WHERE id = ?1 AND status = 'open'";
 
@@ -137,6 +145,10 @@ const SELECT_QUOTES: &str = "SELECT id, lead_id, year, sequence, version, supers
 const SELECT_QUOTE_LINES: &str = "SELECT quote_id, description, quantity, unit_price_cents
     FROM quote_lines ORDER BY quote_id, position";
 
+const SELECT_QUOTE_COUNTERS: &str = "SELECT year, last_sequence FROM quote_numbers ORDER BY year";
+
+const SELECT_SCHEMA_VERSION: &str = "SELECT MAX(version) FROM _sqlx_migrations WHERE success = 1";
+
 const CRM_TABLES: i64 = 2;
 const CRM_TABLE_COUNT: &str = "SELECT COUNT(*) FROM sqlite_master
     WHERE type = 'table' AND name IN ('leads', '_sqlx_migrations')";
@@ -154,6 +166,15 @@ const COMPANY_PHONE_KEY: &str = "company_phone";
 const COMPANY_EMAIL_KEY: &str = "company_email";
 const UPSERT_SETTING: &str = "INSERT INTO settings (key, value) VALUES (?1, ?2)
     ON CONFLICT (key) DO UPDATE SET value = excluded.value";
+
+static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
+
+/// The last quote number given in one year.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QuoteCounter {
+    pub year: i64,
+    pub last_sequence: i64,
+}
 
 #[derive(Clone)]
 pub struct SqliteLeads {
@@ -177,12 +198,74 @@ impl SqliteLeads {
             .await
             .map_err(failure)?;
 
-        sqlx::migrate!("./migrations")
-            .run(&pool)
+        MIGRATOR.run(&pool).await.map_err(failure)?;
+
+        Ok(Self { pool })
+    }
+
+    /// Opens an existing database without migrating it. Writes through this
+    /// store fail, and a missing file is an error, never a new database.
+    pub async fn open_read_only(path: &Path) -> Result<Self, RepositoryError> {
+        let options = SqliteConnectOptions::new().filename(path).read_only(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
             .await
             .map_err(failure)?;
 
         Ok(Self { pool })
+    }
+
+    /// The schema version this build of the adapter works with.
+    pub fn required_schema_version() -> i64 {
+        MIGRATOR
+            .iter()
+            .map(|migration| migration.version)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The last migration applied to this database.
+    pub async fn schema_version(&self) -> Result<i64, RepositoryError> {
+        let version: Option<i64> = sqlx::query_scalar(SELECT_SCHEMA_VERSION)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(failure)?;
+
+        Ok(version.unwrap_or(0))
+    }
+
+    /// SQLite's own check: `ok`, or its findings, one per line.
+    pub async fn integrity_check(&self) -> Result<String, RepositoryError> {
+        let findings: Vec<String> = sqlx::query_scalar("PRAGMA integrity_check")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(failure)?;
+
+        Ok(findings.join("\n"))
+    }
+
+    /// Every case, including closed ones with nothing left to collect.
+    pub async fn all_cases(&self) -> Result<Vec<CaseFile>, RepositoryError> {
+        self.load_cases(SELECT_ALL_CASES, SELECT_ALL_CASE_STEPS)
+            .await
+    }
+
+    /// The numbering counter of each year, oldest year first.
+    pub async fn quote_counters(&self) -> Result<Vec<QuoteCounter>, RepositoryError> {
+        let rows = sqlx::query(SELECT_QUOTE_COUNTERS)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(failure)?;
+
+        rows.iter()
+            .map(|row| {
+                Ok(QuoteCounter {
+                    year: row.try_get("year").map_err(failure)?,
+                    last_sequence: row.try_get("last_sequence").map_err(failure)?,
+                })
+            })
+            .collect()
     }
 
     /// Writes a consistent copy of the database to a path that must not exist.

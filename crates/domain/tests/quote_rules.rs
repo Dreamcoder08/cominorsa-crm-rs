@@ -635,3 +635,20 @@ fn refuses_a_corrupt_stored_quote() {
         );
     }
 }
+
+#[test]
+fn a_draft_can_take_an_injected_id_and_keeps_everything_else() {
+    let draft =
+        QuoteDraft::for_lead(&lead(), content(vec![line(1, 100_000)]), IgvRate::default()).unwrap();
+    let id = uuid::Uuid::from_u128(7);
+
+    let keyed = draft.clone().with_id(id);
+
+    assert_eq!(keyed.id(), id);
+    assert_eq!(keyed.year(), draft.year());
+    let (quote, original) = (numbered(keyed, 1), numbered(draft, 1));
+    assert_eq!(quote.id(), id);
+    assert_eq!(quote.lead_id(), original.lead_id());
+    assert_eq!(quote.lines(), original.lines());
+    assert_eq!(quote.totals(), original.totals());
+}
