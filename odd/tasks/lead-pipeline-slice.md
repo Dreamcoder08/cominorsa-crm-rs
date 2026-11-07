@@ -28,6 +28,12 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - S21. Fix the date tooltip, theme flash, and non-text contrast.
 - S22. Redesign Settings as a settings list with a WhatsApp preview.
 - S23. Enrich prospect companies with the official SUNAT roll: RUC, status, condition, and fiscal address. User: "yes te autorizo todo has lo que sea necesario solo necesito los datos". Exclusions: natural persons are not searched; no phone or email exists in the source; ambiguous names stay without a RUC.
+- S24. "Expediente automático al firmar contrato. Es el corazón de la fusión." Advancing a lead to Contrato firmado atomically opens exactly one case with procedure steps and responsible person.
+- S25. "Plazos por trámite en la Agenda, junto con los seguimientos comerciales." Open case steps appear in the Agenda next to follow-ups.
+- S26. "Hitos de cobro por expediente." Each case has billing milestones with amount, due date, and paid state; amounts use integer cents; no tax invoices.
+- S27. "Cotización en PDF, que cierra el tramo inicial." A lead can produce a numbered quote as a PDF, with correct Spanish text.
+- S28. "Renovaciones, que convierten un cliente atendido en una nueva oportunidad." Closing a recurring case creates a new follow-up lead.
+- Constraint for S24-S28: legal deadlines are never hardcoded. DAC dates change by yearly resolution and last RUC digit (RD 0144-2026-MINEM/DGM), so step dates are editable suggestions, labeled as such, pending client validation.
 
 ## Tasks
 
@@ -43,6 +49,9 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - [x] T10. S18, S19: owner migration, backup settings, restore, and template rules. Route: inline. Risk: item 1. Commit: 71f2dcd.
 - [x] T11. S18-S22: desktop behavior and redesign. Route: inline. Commit: 1cbbe48.
 - [x] T12. S23: tax data migration, importer enrichment, and prospect view. Route: inline. Risk: item 1. Commits: 825f906, 949fe9b.
+- [ ] T13. S24, S25: cases, steps, and Agenda deadlines. Route: delegated, context backstop. Risk: item 1. Commit: pending.
+- [ ] T14. S26, S28: billing milestones and renewals. Route: delegated, context backstop. Risk: item 1. Commit: pending.
+- [ ] T15. S27: quote PDF. Route: delegated, context backstop. Risk: item 1. Commit: pending.
 
 ## Log
 
@@ -76,3 +85,5 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - L26 (2026-11-06): The verifier reported two blockers on d010951: empty or unrelated files passed restore validation, and stored templates with unknown placeholders blocked startup. Fixed in c758cdc with tests that fail on the previous code. A rename failure now keeps the database in place and names the safety copy.
 - L27 (2026-11-06): Verifier recheck at ed0e7d6 passed both blockers. Advisories kept: a rename failure leaves `crm.restoring.db`, the app needs a restart after a post-close failure, and a reopen failure reports an error although the backup was applied.
 - L28 (2026-11-06): SUNAT roll published 2026-11-06 has no phone or email columns. Companies: 436 exact, 30 approximate, 9 ambiguous, 324 without match; 376 active. The output file stays outside the repository.
+- L29 (2026-11-07, user request, verbatim): "imnplementa esto ademas si tienes dudas mira a la competencia aqui en piura o peru o en laitnoametica o como lo hacen los mejores del mundo china , usa y mas". Research found the case-centered pattern in Clio; no usable evidence on Feishu, DingTalk, or Peruvian mining-consultancy software.
+- Delivery forecast: about 1500 more authored lines. Commits stay on the feature branch; no pull request was requested.
