@@ -1,7 +1,7 @@
 //! Display rules, kept free of UI framework types so they stay testable.
 
 use cominorsa_domain::{Lead, Stage};
-use time::{Date, Duration};
+use time::{Date, Duration, OffsetDateTime, macros::offset};
 
 const AGENDA_DAYS: i64 = 7;
 
@@ -135,4 +135,27 @@ impl AgendaGroups {
     pub fn is_empty(&self) -> bool {
         self.overdue.is_empty() && self.today.is_empty() && self.upcoming.is_empty()
     }
+}
+
+/// Formats Unix seconds in Peru time, which has no daylight saving.
+pub fn format_timestamp(unix_seconds: i64) -> String {
+    let local = OffsetDateTime::from_unix_timestamp(unix_seconds)
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH)
+        .to_offset(offset!(-5));
+
+    format!(
+        "{} {:02}:{:02}",
+        format_date(local.date()),
+        local.hour(),
+        local.minute()
+    )
+}
+
+/// Team members plus the current owner, who may have left the team.
+pub fn owner_options(team: &[String], owner: Option<&str>) -> Vec<String> {
+    let mut options = team.to_vec();
+    if let Some(owner) = owner.filter(|owner| !team.iter().any(|member| member == owner)) {
+        options.push(owner.to_owned());
+    }
+    options
 }

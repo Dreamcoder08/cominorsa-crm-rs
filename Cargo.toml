@@ -15,6 +15,7 @@ dioxus = { version = "0.7", default-features = false, features = ["desktop", "ho
 dioxus-ssr = "0.7"
 directories = "6"
 embed-resource = "3"
+rfd = "0.17"
 sqlx = { version = "0.9", default-features = false, features = ["macros", "migrate", "runtime-tokio", "sqlite"] }
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "macros", "parsing"] }

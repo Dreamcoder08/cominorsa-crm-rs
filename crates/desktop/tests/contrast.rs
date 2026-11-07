@@ -2,7 +2,7 @@
 
 const STYLE: &str = include_str!("../src/style.css");
 
-const PAIRS: [(&str, &str); 15] = [
+const PAIRS: [(&str, &str); 16] = [
     ("--text", "--canvas"),
     ("--text", "--surface"),
     ("--text", "--subtle"),
@@ -11,6 +11,7 @@ const PAIRS: [(&str, &str); 15] = [
     ("--muted", "--subtle"),
     ("--accent", "--canvas"),
     ("--accent", "--surface"),
+    ("--accent", "--selected"),
     ("--on-accent", "--accent"),
     ("--overdue", "--overdue-soft"),
     ("--overdue", "--surface"),
@@ -18,6 +19,14 @@ const PAIRS: [(&str, &str); 15] = [
     ("--today", "--surface"),
     ("--closed", "--closed-soft"),
     ("--closed", "--surface"),
+];
+
+/// Control boundaries and state indicators need 3:1 under WCAG 1.4.11.
+const NON_TEXT_PAIRS: [(&str, &str); 4] = [
+    ("--control-line", "--surface"),
+    ("--control-line", "--canvas"),
+    ("--accent", "--canvas"),
+    ("--accent", "--subtle"),
 ];
 
 fn token(name: &str) -> (String, String) {
@@ -63,6 +72,22 @@ fn every_token_pair_meets_aa_in_both_themes() {
             let measured = ratio(&fg, &bg);
             assert!(
                 measured >= 4.5,
+                "{foreground} on {background} in {theme}: {measured:.2}"
+            );
+        }
+    }
+}
+
+#[test]
+fn every_control_and_state_indicator_meets_three_to_one() {
+    for (foreground, background) in NON_TEXT_PAIRS {
+        let (fg_light, fg_dark) = token(foreground);
+        let (bg_light, bg_dark) = token(background);
+
+        for (theme, fg, bg) in [("light", fg_light, bg_light), ("dark", fg_dark, bg_dark)] {
+            let measured = ratio(&fg, &bg);
+            assert!(
+                measured >= 3.0,
                 "{foreground} on {background} in {theme}: {measured:.2}"
             );
         }

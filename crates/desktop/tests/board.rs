@@ -1,7 +1,7 @@
 use cominorsa_desktop::{
-    Agenda, AgendaGroups, FollowUp, FormValues, LeadForm, PipelineSummary, Prospects, Section,
-    SettingsView, Shell, Workspace, format_date, matches_query, next_follow_up, parse_form,
-    profile_label, window_icon,
+    Agenda, AgendaGroups, FollowUp, FormValues, LeadForm, PipelineSummary, Prospects, SaveState,
+    Section, SettingsView, Shell, Workspace, format_date, format_timestamp, matches_query,
+    next_follow_up, owner_options, parse_form, profile_label, window_icon,
 };
 use cominorsa_domain::{Lead, NewLead, Prospect, ProspectKind, Settings, ThemePreference};
 use dioxus::prelude::*;
@@ -48,6 +48,7 @@ fn workspace_with_leads() -> Element {
             on_query: |_| {},
             on_new: |_| {},
             on_advance: |_| {},
+            on_assign: |_| {},
         }
     }
 }
@@ -75,6 +76,7 @@ fn workspace_with_whatsapp() -> Element {
             on_query: |_| {},
             on_new: |_| {},
             on_advance: |_| {},
+            on_assign: |_| {},
         }
     }
 }
@@ -96,6 +98,7 @@ fn workspace_without_matches() -> Element {
             on_query: |_| {},
             on_new: |_| {},
             on_advance: |_| {},
+            on_assign: |_| {},
         }
     }
 }
@@ -109,6 +112,7 @@ fn empty_workspace() -> Element {
             on_query: |_| {},
             on_new: |_| {},
             on_advance: |_| {},
+            on_assign: |_| {},
         }
     }
 }
@@ -119,6 +123,7 @@ fn form_with_error() -> Element {
             values: FormValues::default(),
             saving: true,
             error: "El RUC no es válido".to_owned(),
+            team: vec!["Ana".to_owned()],
             on_change: |_| {},
             on_submit: |_| {},
             on_close: |_| {},
@@ -220,7 +225,7 @@ fn form(date: &str, ruc: &str) -> FormValues {
         phone: "900000000".to_owned(),
         ruc: ruc.to_owned(),
         service: "REINFO".to_owned(),
-        owner: None,
+        owner: "Ana".to_owned(),
         follow_up_on: date.to_owned(),
     }
 }
@@ -230,6 +235,7 @@ fn parses_form_values_into_a_lead() {
     let lead = parse_form(form("2026-11-10", "20123456786")).unwrap();
 
     assert_eq!(lead.name(), "Minera");
+    assert_eq!(lead.owner(), Some("Ana"));
     assert_eq!(lead.follow_up_on(), date!(2026 - 11 - 10));
 }
 
@@ -325,7 +331,6 @@ fn shell_view() -> Element {
     rsx! {
         Shell {
             section: Section::Settings,
-            today: TODAY,
             on_section: |_| {},
             p { "Contenido" }
         }
@@ -348,24 +353,60 @@ fn shows_every_section_and_marks_the_current_one() {
     assert_eq!(html.matches("aria-current=\"page\"").count(), 1);
 }
 
-fn settings_view() -> Element {
+fn settings_props(pending_restore: Option<String>) -> Element {
     let mut settings = Settings::default();
     settings.theme = ThemePreference::Dark;
     settings.add_member("Ana").unwrap();
+    settings.set_backup_directory("/media/usb");
+    settings.record_backup(1_793_999_400);
 
     rsx! {
         SettingsView {
             settings,
             database: "/datos/crm.db".to_owned(),
-            notice: "Copia creada".to_owned(),
+            save_state: SaveState::Saved,
+            backup_notice: "Copia creada".to_owned(),
+            pending_restore,
+            busy: false,
             on_change: |_| {},
+            on_pick_folder: |_| {},
             on_backup: |_| {},
+            on_pick_restore: |_| {},
+            on_confirm_restore: |_| {},
+            on_cancel_restore: |_| {},
+        }
+    }
+}
+
+fn settings_view() -> Element {
+    settings_props(None)
+}
+
+fn settings_with_pending_restore() -> Element {
+    settings_props(Some("/media/usb/crm.db".to_owned()))
+}
+
+fn settings_without_backup_folder() -> Element {
+    rsx! {
+        SettingsView {
+            settings: Settings::default(),
+            database: "/datos/crm.db".to_owned(),
+            save_state: SaveState::Failed("Sin espacio".to_owned()),
+            backup_notice: String::new(),
+            pending_restore: None,
+            busy: false,
+            on_change: |_| {},
+            on_pick_folder: |_| {},
+            on_backup: |_| {},
+            on_pick_restore: |_| {},
+            on_confirm_restore: |_| {},
+            on_cancel_restore: |_| {},
         }
     }
 }
 
 #[test]
-fn shows_theme_team_follow_up_and_data_settings() {
+fn shows_every_setting_with_its_saved_state() {
     let html = render(settings_view);
 
     for text in [
@@ -376,13 +417,82 @@ fn shows_theme_team_follow_up_and_data_settings() {
         "Equipo",
         "Ana",
         "Mensaje de WhatsApp",
+        "Vista previa",
+        "Guardado",
+        "Crear copia ahora",
+        "Restaurar una copia",
+        "/media/usb",
+        "Copia creada",
+        "/datos/crm.db",
     ] {
         assert!(html.contains(text), "missing {text}");
     }
-    assert!(html.contains("Crear copia de seguridad"));
-    assert!(html.contains("/datos/crm.db"));
-    assert!(html.contains("Copia creada"));
-    assert_eq!(html.matches("aria-pressed=\"true\"").count(), 1);
+    assert_eq!(html.matches("type=\"radio\"").count(), 3);
+    assert_eq!(html.matches("checked=true").count(), 1);
+    assert!(html.contains("days-unit"));
+}
+
+#[test]
+fn shows_the_last_backup_time_in_peru() {
+    assert_eq!(format_timestamp(1_793_999_400), "06/11/2026 16:10");
+    assert!(render(settings_view).contains("Última copia: 06/11/2026 16:10"));
+}
+
+#[test]
+fn requires_a_folder_before_backing_up_and_warns_about_the_same_disk() {
+    let html = render(settings_without_backup_folder);
+
+    assert!(html.contains("Aún no hay copias"));
+    assert!(html.contains("disabled"));
+    assert!(html.contains("USB"));
+    assert!(html.contains("Sin espacio"));
+    assert!(html.contains("todavía no agregaste"));
+}
+
+#[test]
+fn asks_for_confirmation_before_restoring() {
+    let html = render(settings_with_pending_restore);
+
+    assert!(html.contains("/media/usb/crm.db"));
+    assert!(html.contains("Reemplazar datos actuales"));
+    assert!(html.contains("Cancelar"));
+}
+
+#[test]
+fn keeps_a_removed_owner_selectable_without_duplicates() {
+    let team = vec!["Ana".to_owned()];
+
+    assert_eq!(owner_options(&team, Some("Ana")), ["Ana"]);
+    assert_eq!(owner_options(&team, Some("Luis")), ["Ana", "Luis"]);
+    assert_eq!(owner_options(&team, None), ["Ana"]);
+}
+
+#[test]
+fn does_not_put_a_tooltip_on_the_whole_page() {
+    assert!(!render(shell_view).contains("title=\"06/11/2026\""));
+}
+
+fn workspace_with_team() -> Element {
+    rsx! {
+        Workspace {
+            leads: leads(),
+            today: TODAY,
+            query: String::new(),
+            team: vec!["Ana".to_owned()],
+            on_query: |_| {},
+            on_new: |_| {},
+            on_advance: |_| {},
+            on_assign: |_| {},
+        }
+    }
+}
+
+#[test]
+fn offers_the_responsible_person_on_each_card() {
+    let html = render(workspace_with_team);
+
+    assert_eq!(html.matches("Sin responsable").count(), 3);
+    assert!(html.contains(">Ana<"));
 }
 
 #[test]

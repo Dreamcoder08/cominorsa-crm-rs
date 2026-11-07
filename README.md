@@ -1,6 +1,6 @@
 # COMINORSA CRM
 
-Local desktop CRM written in Rust. It registers leads, moves them through the sales pipeline, searches them, shows a follow-up agenda, and keeps a searchable prospect list that converts into leads. Lead cards open a prepared WhatsApp chat that a person reviews and sends. Settings cover the light, dark, or system theme, the team list, default follow-up days, the WhatsApp message, and manual backups.
+Local desktop CRM written in Rust. It registers leads, moves them through the sales pipeline, searches them, shows a follow-up agenda, and keeps a searchable prospect list that converts into leads. Lead cards open a prepared WhatsApp chat that a person reviews and sends. Each lead can have a responsible person from the team list. Settings cover the theme, team, default follow-up days, the WhatsApp message with a preview, and backup and restore. Valid changes save automatically and report their state.
 
 ## Quick path
 
@@ -41,7 +41,7 @@ The importer validates both files first, copies an existing database next to it 
 
 ## Design system
 
-Tokens live at the top of `crates/desktop/src/style.css` and use `light-dark()`, so each color is declared once for both themes. `crates/desktop/tests/contrast.rs` fails when a token pair drops below WCAG AA. Layout has three modes: full sidebar, icon rail at 1080 px, and bottom navigation at 720 px.
+Tokens live at the top of `crates/desktop/src/style.css` and use `light-dark()`, so each color is declared once for both themes. `crates/desktop/tests/contrast.rs` fails when text drops below 4.5:1 or a control or state indicator drops below 3:1. Layout has three modes: full sidebar, icon rail at 1080 px, and bottom navigation at 720 px.
 
 ## Structure
 
@@ -63,7 +63,7 @@ Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adap
 | Follow-up alerts | Visible only while the app is open |
 | Leads from the website or WhatsApp | Registered manually; there is no automatic intake |
 | Prospects | Concession titleholders without phone, RUC, or email; potential service is inferred, not verified |
-| Backups | Manual from Settings and automatic before an import; no scheduled backup yet |
+| Backups | Manual to a user-chosen folder, automatic before an import, and verified restore from Settings; no scheduled backup yet |
 | Disk encryption | Not provided by the app; enable it on the laptop |
 | Windows | Cross-compiled with `cargo zigbuild --target x86_64-pc-windows-gnu`; not run on Windows yet; requires the WebView2 runtime. The `.github/workflows/windows.yml` build needs an active GitHub billing state |
 

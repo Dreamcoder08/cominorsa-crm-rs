@@ -6,7 +6,8 @@ use time::Date;
 use uuid::Uuid;
 
 use crate::{
-    AgendaGroups, FollowUp, FormValues, PipelineSummary, format_date, matches_query, profile_label,
+    AgendaGroups, FollowUp, FormValues, PipelineSummary, format_date, matches_query, owner_options,
+    profile_label,
 };
 
 const SERVICES: [&str; 5] = ["REINFO", "IGAFOM", "DAC", "ESTAMIN", "Plan de minado"];
@@ -26,12 +27,7 @@ pub enum Section {
 }
 
 #[component]
-pub fn Shell(
-    section: Section,
-    today: Date,
-    on_section: EventHandler<Section>,
-    children: Element,
-) -> Element {
+pub fn Shell(section: Section, on_section: EventHandler<Section>, children: Element) -> Element {
     rsx! {
         div { class: "shell",
             aside { class: "sidebar",
@@ -48,7 +44,7 @@ pub fn Shell(
                     NavItem { target: Section::Settings, current: section, label: "Configuración", icon: ICON_SETTINGS, on_section }
                 }
             }
-            main { class: "content", title: "{format_date(today)}", {children} }
+            main { class: "content", {children} }
         }
     }
 }
@@ -231,9 +227,11 @@ pub fn Workspace(
     today: Date,
     query: String,
     #[props(default)] whatsapp_template: String,
+    #[props(default)] team: Vec<String>,
     on_query: EventHandler<String>,
     on_new: EventHandler<()>,
     on_advance: EventHandler<Uuid>,
+    on_assign: EventHandler<(Uuid, String)>,
 ) -> Element {
     let summary = PipelineSummary::of(&leads, today);
     let is_empty = leads.is_empty();
@@ -283,7 +281,7 @@ pub fn Workspace(
                         p { "Prueba con otro nombre, RUC, teléfono o servicio." }
                     }
                 } else {
-                    Board { leads: visible, today, whatsapp_template, on_advance }
+                    Board { leads: visible, today, whatsapp_template, team, on_advance, on_assign }
                 }
     }
 }
@@ -303,7 +301,9 @@ fn Board(
     leads: Vec<Lead>,
     today: Date,
     whatsapp_template: String,
+    team: Vec<String>,
     on_advance: EventHandler<Uuid>,
+    on_assign: EventHandler<(Uuid, String)>,
 ) -> Element {
     rsx! {
         section { class: "board", aria_label: "Etapas del embudo",
@@ -328,8 +328,10 @@ fn Board(
                                         key: "{lead.id()}",
                                         status: FollowUp::of(&lead, today),
                                         whatsapp: lead.whatsapp_url(&whatsapp_template),
+                                        owners: owner_options(&team, lead.owner()),
                                         lead,
                                         on_advance,
+                                        on_assign,
                                     }
                                 }
                                 if count == 0 {
@@ -349,7 +351,9 @@ fn LeadCard(
     lead: Lead,
     status: FollowUp,
     whatsapp: Option<String>,
+    owners: Vec<String>,
     on_advance: EventHandler<Uuid>,
+    on_assign: EventHandler<(Uuid, String)>,
 ) -> Element {
     let id = lead.id();
 
@@ -362,6 +366,22 @@ fn LeadCard(
             p { class: "detail", "{lead.phone()}" }
             if let Some(ruc) = lead.ruc() {
                 p { class: "detail", "RUC {ruc.as_str()}" }
+            }
+            if !owners.is_empty() {
+                select {
+                    class: "owner-select",
+                    aria_label: "Responsable de {lead.name()}",
+                    onchange: move |event| on_assign.call((id, event.value())),
+                    option { value: "", selected: lead.owner().is_none(), "Sin responsable" }
+                    for owner in owners {
+                        option {
+                            key: "{owner}",
+                            value: "{owner}",
+                            selected: lead.owner() == Some(owner.as_str()),
+                            "{owner}"
+                        }
+                    }
+                }
             }
             div { class: "card-bottom",
                 span { class: "status {status.class()}", "{status.label()}" }
@@ -393,6 +413,7 @@ pub fn LeadForm(
     values: FormValues,
     saving: bool,
     error: String,
+    #[props(default)] team: Vec<String>,
     on_change: EventHandler<FormValues>,
     on_submit: EventHandler<()>,
     on_close: EventHandler<()>,
@@ -468,6 +489,22 @@ pub fn LeadForm(
                         datalist { id: "services",
                             for service in SERVICES {
                                 option { value: service }
+                            }
+                        }
+                    }
+                    if !team.is_empty() {
+                        label { "Responsable"
+                            select {
+                                onchange: edit(|v, text| v.owner = text),
+                                option { value: "", selected: values.owner.is_empty(), "Sin responsable" }
+                                for member in team.iter() {
+                                    option {
+                                        key: "{member}",
+                                        value: "{member}",
+                                        selected: values.owner == *member,
+                                        "{member}"
+                                    }
+                                }
                             }
                         }
                     }

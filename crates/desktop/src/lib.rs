@@ -15,20 +15,26 @@ use dioxus::{
     prelude::*,
 };
 use directories::ProjectDirs;
-use time::{Date, OffsetDateTime, format_description::well_known::Iso8601, macros::offset};
+use time::{
+    Date, OffsetDateTime,
+    format_description::{BorrowedFormatItem, well_known::Iso8601},
+    macros::{format_description, offset},
+};
 use uuid::Uuid;
 
 pub use presentation::{
-    AgendaGroups, FollowUp, PipelineSummary, format_date, matches_query, next_follow_up,
-    profile_label,
+    AgendaGroups, FollowUp, PipelineSummary, format_date, format_timestamp, matches_query,
+    next_follow_up, owner_options, profile_label,
 };
-pub use settings_view::SettingsView;
+pub use settings_view::{SaveState, SettingsView};
 pub use views::{Agenda, LeadForm, Prospects, Section, Shell, Workspace};
 
 const STYLE: &str = include_str!("style.css");
 const ICON: &[u8] = include_bytes!("../assets/icon.png");
 const DATABASE_PATH_VARIABLE: &str = "COMINORSA_DB_PATH";
 const PROSPECT_PAGE_SIZE: u32 = 100;
+const FILE_STAMP: &[BorrowedFormatItem<'_>] =
+    format_description!("[year][month][day]-[hour][minute][second]");
 const MANUAL_REVIEW_SERVICE: &str = "REVISAR_MANUAL";
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -37,6 +43,7 @@ pub struct FormValues {
     pub phone: String,
     pub ruc: String,
     pub service: String,
+    pub owner: String,
     pub follow_up_on: String,
 }
 
@@ -74,7 +81,7 @@ pub fn parse_form(values: FormValues) -> Result<Lead, String> {
         phone: values.phone,
         ruc: Some(values.ruc),
         service: values.service,
-        owner: None,
+        owner: Some(values.owner),
         follow_up_on,
     })
     .map_err(|error| error.to_string())
@@ -99,21 +106,52 @@ fn database_path() -> Result<PathBuf, String> {
         .ok_or_else(|| "No se encontró la carpeta de datos".to_owned())
 }
 
-/// Writes a timestamped copy next to the database and returns its path.
-async fn create_backup(store: SqliteLeads) -> Result<PathBuf, String> {
-    let directory = database_path()?
-        .parent()
-        .map(|parent| parent.join("copias"))
-        .ok_or_else(|| "No se encontró la carpeta de copias".to_owned())?;
-    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-    let stamp = OffsetDateTime::now_utc().unix_timestamp();
-    let path = directory.join(format!("crm-{stamp}.db"));
+fn file_stamp() -> String {
+    OffsetDateTime::now_utc()
+        .to_offset(offset!(-5))
+        .format(FILE_STAMP)
+        .unwrap_or_else(|_| OffsetDateTime::now_utc().unix_timestamp().to_string())
+}
+
+/// Writes a timestamped copy to the chosen folder and returns its path.
+async fn create_backup(store: SqliteLeads, folder: String) -> Result<PathBuf, String> {
+    fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
+    let path = PathBuf::from(folder).join(format!("crm-{}.db", file_stamp()));
 
     store
         .backup_to(&path)
         .await
         .map_err(|error| error.to_string())?;
     Ok(path)
+}
+
+async fn restore_backup(store: SqliteLeads, backup: PathBuf) -> Result<SqliteLeads, String> {
+    let database = database_path()?;
+    let safety = database.with_extension(format!("antes-de-restaurar-{}.db", file_stamp()));
+
+    store
+        .restore(&database, &backup, &safety)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Loads settings before the window opens, so the saved theme never flashes.
+pub fn load_initial_settings() -> Settings {
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return Settings::default();
+    };
+
+    runtime.block_on(async {
+        let Ok(store) = open_store().await else {
+            return Settings::default();
+        };
+        let settings = store.load().await.unwrap_or_default();
+        store.close().await;
+        settings
+    })
 }
 
 async fn open_store() -> Result<SqliteLeads, String> {
@@ -129,8 +167,11 @@ pub fn App() -> Element {
     let mut leads = use_signal(Vec::<Lead>::new);
     let mut startup_error = use_signal(|| None::<String>);
     let mut form_error = use_signal(String::new);
-    let mut settings = use_signal(Settings::default);
+    let mut settings = use_signal(|| try_consume_context::<Settings>().unwrap_or_default());
     let mut backup_notice = use_signal(String::new);
+    let mut save_state = use_signal(SaveState::default);
+    let mut pending_restore = use_signal(|| None::<PathBuf>);
+    let mut busy = use_signal(|| false);
     let new_form = move || {
         FormValues::starting_on(next_follow_up(
             today_in_peru(),
@@ -203,6 +244,21 @@ pub fn App() -> Element {
         });
     };
 
+    let mut save_settings = move |next: Settings| {
+        settings.set(next.clone());
+        let Some(repository) = store.read().clone() else {
+            return;
+        };
+
+        save_state.set(SaveState::Saving);
+        spawn(async move {
+            save_state.set(match repository.persist(&next).await {
+                Ok(()) => SaveState::Saved,
+                Err(failure) => SaveState::Failed(failure.to_string()),
+            });
+        });
+    };
+
     let theme = settings.read().theme.code();
 
     rsx! {
@@ -213,22 +269,29 @@ pub fn App() -> Element {
         }
         Shell {
             section: section(),
-            today: today_in_peru(),
             on_section: move |next| section.set(next),
             if section() == Section::Settings {
                 SettingsView {
                     settings: settings(),
                     database: database_path().map_or_else(|error| error, |path| path.display().to_string()),
-                    notice: backup_notice(),
+                    save_state: save_state(),
+                    backup_notice: backup_notice(),
+                    pending_restore: pending_restore().map(|path: PathBuf| path.display().to_string()),
+                    busy: busy(),
                     on_change: move |next: Settings| {
-                        settings.set(next.clone());
+                        save_settings(next);
                         form.set(new_form());
-                        let Some(repository) = store.read().clone() else {
-                            return;
-                        };
+                    },
+                    on_pick_folder: move |_| {
                         spawn(async move {
-                            if let Err(failure) = repository.persist(&next).await {
-                                startup_error.set(Some(failure.to_string()));
+                            let picked = rfd::AsyncFileDialog::new()
+                                .set_title("Elegir carpeta para las copias")
+                                .pick_folder()
+                                .await;
+                            if let Some(folder) = picked {
+                                let mut next = settings();
+                                next.set_backup_directory(&folder.path().display().to_string());
+                                save_settings(next);
                             }
                         });
                     },
@@ -236,13 +299,65 @@ pub fn App() -> Element {
                         let Some(repository) = store.read().clone() else {
                             return;
                         };
+                        let Some(folder) = settings.read().backup_directory().map(str::to_owned) else {
+                            return;
+                        };
+                        busy.set(true);
                         spawn(async move {
-                            backup_notice.set(match create_backup(repository).await {
-                                Ok(path) => format!("Copia creada en {}", path.display()),
-                                Err(failure) => failure,
-                            });
+                            match create_backup(repository, folder).await {
+                                Ok(path) => {
+                                    let mut next = settings();
+                                    next.record_backup(OffsetDateTime::now_utc().unix_timestamp());
+                                    save_settings(next);
+                                    backup_notice.set(format!("Copia creada en {}", path.display()));
+                                }
+                                Err(failure) => backup_notice.set(format!("No se pudo copiar: {failure}")),
+                            }
+                            busy.set(false);
                         });
                     },
+                    on_pick_restore: move |_| {
+                        spawn(async move {
+                            let picked = rfd::AsyncFileDialog::new()
+                                .set_title("Elegir copia de seguridad")
+                                .add_filter("Copia de COMINORSA", &["db"])
+                                .pick_file()
+                                .await;
+                            if let Some(file) = picked {
+                                pending_restore.set(Some(file.path().to_path_buf()));
+                            }
+                        });
+                    },
+                    on_confirm_restore: move |_| {
+                        let Some(backup) = pending_restore() else {
+                            return;
+                        };
+                        let Some(repository) = store.read().clone() else {
+                            return;
+                        };
+                        busy.set(true);
+                        spawn(async move {
+                            let restored = async {
+                                let reopened = restore_backup(repository, backup).await?;
+                                let list = reopened.list().await.map_err(|error| error.to_string())?;
+                                let saved = reopened.load().await.map_err(|error| error.to_string())?;
+                                Ok::<_, String>((reopened, list, saved))
+                            };
+
+                            match restored.await {
+                                Ok((reopened, list, saved)) => {
+                                    store.set(Some(reopened));
+                                    leads.set(list);
+                                    settings.set(saved);
+                                    backup_notice.set("Copia restaurada".to_owned());
+                                }
+                                Err(failure) => backup_notice.set(format!("No se pudo restaurar: {failure}")),
+                            }
+                            pending_restore.set(None);
+                            busy.set(false);
+                        });
+                    },
+                    on_cancel_restore: move |_| pending_restore.set(None),
                 }
             } else if section() == Section::Agenda {
                 Agenda {
@@ -257,7 +372,18 @@ pub fn App() -> Element {
                     today: today_in_peru(),
                     query: query(),
                     whatsapp_template: settings.read().whatsapp_template().to_owned(),
+                    team: settings.read().team().to_vec(),
                     on_query: move |value| query.set(value),
+                    on_assign: move |(id, owner): (Uuid, String)| {
+                        if saving() {
+                            return;
+                        }
+                        let Some(mut lead) = leads.read().iter().find(|lead| lead.id() == id).cloned() else {
+                            return;
+                        };
+                        lead.assign(Some(&owner));
+                        persist(lead, false);
+                    },
                     on_new: move |_| {
                         form_error.set(String::new());
                         panel_open.set(true);
@@ -304,6 +430,7 @@ pub fn App() -> Element {
                 values: form(),
                 saving: saving(),
                 error: form_error(),
+                team: settings.read().team().to_vec(),
                 on_change: move |values| form.set(values),
                 on_submit: move |_| {
                     if saving() {
