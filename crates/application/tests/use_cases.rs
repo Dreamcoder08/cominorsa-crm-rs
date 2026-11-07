@@ -1174,7 +1174,7 @@ async fn reading_a_missing_database_is_a_storage_failure_that_creates_nothing() 
 
     let refused = open_for_reading(&scratch.database()).await.err().unwrap();
 
-    assert_eq!(refused.code(), "database_not_found");
+    assert_eq!(refused.code(), "database_missing");
     assert_eq!(refused.kind(), ErrorKind::Storage);
     assert!(!scratch.database().exists());
 }
@@ -1207,6 +1207,6 @@ async fn migrating_a_missing_database_is_refused_and_creates_nothing() {
         .await
         .unwrap_err();
 
-    assert_eq!(refused.code(), "database_not_found");
+    assert_eq!(refused.code(), "database_missing");
     assert!(!scratch.database().exists());
 }

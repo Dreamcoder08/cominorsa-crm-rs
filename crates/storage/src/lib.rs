@@ -216,6 +216,45 @@ impl SqliteLeads {
         Ok(Self { pool })
     }
 
+    /// Opens an existing database to write, without creating or migrating it.
+    /// The caller has already checked its schema version.
+    pub async fn open_existing(path: &Path) -> Result<Self, RepositoryError> {
+        let options = SqliteConnectOptions::new()
+            .filename(path)
+            .journal_mode(SqliteJournalMode::Wal);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .map_err(failure)?;
+
+        Ok(Self { pool })
+    }
+
+    /// Migrates a working copy of `safety_copy` and only then puts it in place
+    /// of `database` with a rename, so a failed migration leaves `database` as
+    /// it was. Nothing may be writing to `database` meanwhile.
+    pub async fn upgrade(database: &Path, safety_copy: &Path) -> Result<(), RepositoryError> {
+        let working = database.with_extension("migrating.db");
+        remove_with_sidecars(&working);
+
+        let migrated = async {
+            fs::copy(safety_copy, &working).map_err(failure)?;
+            Self::open(&working).await?.close().await;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = migrated {
+            remove_with_sidecars(&working);
+            return Err(error);
+        }
+
+        // A stale WAL would replay over the new file. If the rename fails, the
+        // safety copy still holds what that WAL held.
+        remove_sidecars(database);
+        fs::rename(&working, database).map_err(failure)
+    }
+
     /// The schema version this build of the adapter works with.
     pub fn required_schema_version() -> i64 {
         MIGRATOR

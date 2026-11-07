@@ -28,7 +28,8 @@ pub use cases::{
 pub use context::{Clock, Context, Ids, today_in_peru};
 pub use error::{AppError, ErrorKind};
 pub use inspect::{
-    Migration, Snapshot, Status, migrate_database, open_for_reading, snapshot, status,
+    Migration, Snapshot, Status, create_database, migrate_database, open_for_reading,
+    open_for_writing, snapshot, status,
 };
 pub use leads::{
     Advance, FormValues, NewLeadOutcome, add_lead, advance_lead, assign_lead, find_lead,

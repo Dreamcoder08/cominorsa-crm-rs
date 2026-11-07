@@ -21,6 +21,7 @@ trap 'rm -rf "$root"' EXIT
 day="2026-03-02"
 checks=0
 db="crm.db"
+no_id="00000000-0000-0000-0000-000000000000"
 
 # Runs one command on a fixed day and prints its JSON data. The id seed comes
 # from the command itself, so a repeated command repeats its ids.
@@ -76,9 +77,58 @@ refused() {
     expect "state hash after '$*'" "$before" "$(state_hash)"
 }
 
+# refused_absent <args...>: a write on a database that does not exist is refused
+# and creates nothing.
+refused_absent() {
+    local status=0
+    "$binary" --db "$db" --json --today "$day" "$@" >absent.out 2>absent.err || status=$?
+    expect "exit of '$*' without a database" 3 "$status"
+    expect "stdout of '$*' without a database" "" "$(cat absent.out)"
+    expect "code of '$*' without a database" database_missing "$(jq -r '.error.code' absent.err)"
+    [[ ! -e "$db" ]] || fail "'$*' created the database"
+    rm -f absent.out absent.err
+}
+
+# refused_on <file> <code> <args...>: a write on a schema it cannot use is
+# refused and the file keeps its hash.
+refused_on() {
+    local file="$1" code="$2"
+    shift 2
+    local before status=0
+    before="$(file_hash "$file")"
+    "$binary" --db "$file" --json --today "$day" "$@" >write.out 2>write.err || status=$?
+    expect "exit of '$*' on $file" 3 "$status"
+    expect "stdout of '$*' on $file" "" "$(cat write.out)"
+    expect "code of '$*' on $file" "$code" "$(jq -r '.error.code' write.err)"
+    expect "file hash after '$*' on $file" "$before" "$(file_hash "$file")"
+}
+
+# Writes that must never reach an older or newer schema.
+refused_writes() {
+    local file="$1" code="$2"
+    refused_on "$file" "$code" lead add --name "" --phone 987654321 --service DAC
+    refused_on "$file" "$code" lead advance "$no_id"
+    refused_on "$file" "$code" case close "$no_id"
+    refused_on "$file" "$code" step done "$no_id"
+    refused_on "$file" "$code" billing pay "$no_id"
+    refused_on "$file" "$code" quote accept COT-1999-0001
+    refused_on "$file" "$code" settings set --follow-up-days 5
+    refused_on "$file" "$code" prospect import --companies none.csv --people none.csv
+    refused_on "$file" "$code" backup create --folder copias-viejas
+}
+
 # The whole sale. Paths in the data stay relative, so two runs store the same bytes.
 scenario() {
     scratch="$PWD"
+    echo "== a write on a missing database creates nothing"
+    refused_absent lead add --name "" --phone 987654321 --service DAC
+    refused_absent lead advance "$no_id"
+    refused_absent settings set --theme dark
+    refused_absent prospect import --companies none.csv --people none.csv
+    expect "init creates the database" true "$(cli init | jq '.created')"
+    expect "init schema" 8 "$(cli status | jq '.schema_version')"
+    refused 1 database_exists init
+
     echo "== team and settings"
     cli settings set \
         --company-name "Consultora Sintética SAC" --company-ruc 20100070970 \
@@ -321,6 +371,26 @@ message="$(jq -r '.error.message' old.err)"
 [[ "$message" == *"7"* && "$message" == *"8"* && "$message" == *"cominorsa migrate"* ]] ||
     fail "the error must name both versions and the upgrade: $message"
 
+refused_writes old.db schema_outdated
+expect "a refused write leaves the schema" 7 "$(sqlite3 old.db 'SELECT MAX(version) FROM _sqlx_migrations')"
+
+echo "== a failed migration leaves the database and keeps its copy"
+cp old.db blocked.db
+sqlite3 blocked.db "CREATE TABLE quote_numbers (blocking TEXT);"
+blocked_hash="$(file_hash blocked.db)"
+status=0
+"$binary" --db blocked.db --json --today "$day" migrate >blocked.out 2>blocked.err || status=$?
+expect "exit of a failed migration" 3 "$status"
+expect "stdout of a failed migration" "" "$(cat blocked.out)"
+expect "code of a failed migration" migration_failed "$(jq -r '.error.code' blocked.err)"
+expect "file hash after a failed migration" "$blocked_hash" "$(file_hash blocked.db)"
+blocked_copy="$(compgen -G 'blocked.antes-de-migrar-*.db')" || fail "a failed migration lost its copy"
+expect "the copy holds the old schema" 7 "$(sqlite3 "$blocked_copy" 'SELECT MAX(version) FROM _sqlx_migrations')"
+[[ "$(jq -r '.error.message' blocked.err)" == *"$blocked_copy"* ]] ||
+    fail "the error must name the copy: $(cat blocked.err)"
+[[ -z "$(compgen -G 'blocked.migrating*')" ]] || fail "a failed migration left its working copy"
+
+echo "== only migrate upgrades"
 migration="$("$binary" --db old.db --json --today "$day" migrate | jq -c '.data')"
 expect "migrate changed" true "$(jq '.changed' <<<"$migration")"
 expect "migrate from" 7 "$(jq '.from' <<<"$migration")"
@@ -332,15 +402,18 @@ expect "migrating twice changes nothing" false "$(cli migrate | jq '.changed')"
 
 echo "== a newer schema is refused"
 cp "$root/first/crm.db" new.db
-sqlite3 new.db "INSERT INTO _sqlx_migrations
+sqlite3 new.db "PRAGMA journal_mode = DELETE;
+    INSERT INTO _sqlx_migrations
     SELECT 999, description, installed_on, success, checksum, execution_time
-    FROM _sqlx_migrations WHERE version = 8;"
+    FROM _sqlx_migrations WHERE version = 8;" >/dev/null
 new_hash="$(file_hash new.db)"
 status=0
 "$binary" --db new.db --json status >/dev/null 2>new.err || status=$?
 expect "exit on a newer schema" 3 "$status"
 expect "code on a newer schema" schema_newer "$(jq -r '.error.code' new.err)"
 expect "file hash on a newer schema" "$new_hash" "$(file_hash new.db)"
+refused_writes new.db schema_newer
+expect "a refused write keeps the journal mode" delete "$(sqlite3 new.db 'PRAGMA journal_mode')"
 cd - >/dev/null
 
 printf '\nCLI end-to-end scenario passed: %d checks.\n' "$checks"

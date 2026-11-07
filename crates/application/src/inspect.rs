@@ -1,5 +1,6 @@
-//! Read-only views of the stored state, for assertions and diagnosis. These
-//! name the SQLite adapter because schema, integrity, and counters have no port.
+//! Opening the database, and read-only views of the stored state for assertions
+//! and diagnosis. These name the SQLite adapter because schema, integrity, and
+//! counters have no port.
 
 use std::path::{Path, PathBuf};
 
@@ -11,10 +12,13 @@ use cominorsa_storage::{QuoteCounter, SqliteLeads};
 
 use crate::{cases::is_active, context::Clock, error::AppError};
 
-fn not_found(path: &Path) -> AppError {
+fn missing(path: &Path) -> AppError {
     AppError::storage(
-        "database_not_found",
-        format!("No existe la base de datos {}", path.display()),
+        "database_missing",
+        format!(
+            "No existe la base de datos {}. Créala con: cominorsa init",
+            path.display()
+        ),
     )
 }
 
@@ -27,11 +31,36 @@ fn newer_schema(found: i64, required: i64) -> AppError {
     )
 }
 
+/// Creates a new database at the current schema and returns that version. An
+/// existing file is refused, whatever it holds.
+pub async fn create_database(path: &Path) -> Result<i64, AppError> {
+    if path.exists() {
+        return Err(AppError::rejected(
+            "database_exists",
+            format!("Ya existe {}", path.display()),
+        ));
+    }
+
+    let store = SqliteLeads::open(path).await?;
+    let version = store.schema_version().await?;
+    store.close().await;
+
+    Ok(version)
+}
+
+/// Opens a database to write in it, under the same checks as reading, so a
+/// write can never create or migrate one.
+pub async fn open_for_writing(path: &Path) -> Result<SqliteLeads, AppError> {
+    open_for_reading(path).await?.close().await;
+
+    Ok(SqliteLeads::open_existing(path).await?)
+}
+
 /// Opens a database to read it. It is never created or migrated: a schema that
 /// does not match is an error that names the upgrade.
 pub async fn open_for_reading(path: &Path) -> Result<SqliteLeads, AppError> {
     if !path.exists() {
-        return Err(not_found(path));
+        return Err(missing(path));
     }
 
     let store = SqliteLeads::open_read_only(path).await?;
@@ -65,10 +94,11 @@ pub struct Migration {
 }
 
 /// Brings a database to the required schema, after copying it beside itself.
-/// A database that is already current is not touched.
+/// A database that is already current is not touched. The migrations run on a
+/// working copy, so when one fails the database stays as it was.
 pub async fn migrate_database(path: &Path, clock: &Clock) -> Result<Migration, AppError> {
     if !path.exists() {
-        return Err(not_found(path));
+        return Err(missing(path));
     }
 
     let reader = SqliteLeads::open_read_only(path).await?;
@@ -92,7 +122,17 @@ pub async fn migrate_database(path: &Path, clock: &Clock) -> Result<Migration, A
     let safety_copy = path.with_extension(format!("antes-de-migrar-{}.db", clock.file_stamp()));
     reader.backup_to(&safety_copy).await?;
     reader.close().await;
-    SqliteLeads::open(path).await?.close().await;
+    SqliteLeads::upgrade(path, &safety_copy)
+        .await
+        .map_err(|error| {
+            AppError::storage(
+                "migration_failed",
+                format!(
+                    "No se pudo actualizar la base: {error}. Sigue en la versión {from} y su copia está en {}",
+                    safety_copy.display()
+                ),
+            )
+        })?;
 
     Ok(Migration {
         from,

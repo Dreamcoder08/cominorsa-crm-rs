@@ -63,11 +63,13 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Crea una base nueva en el esquema actual. Una existente se rechaza
+    Init,
     /// Muestra la versión del esquema, la integridad y cuántos registros hay
     Status,
     /// Exporta todo el estado en JSON, sin cambiar nada
     Export,
-    /// Actualiza el esquema de la base, tras guardar una copia a su lado
+    /// Actualiza el esquema tras copiar la base a su lado. Es la única orden que lo hace
     Migrate,
     /// Muestra seguimientos, trámites y cobros vencidos o próximos
     Agenda,

@@ -31,13 +31,14 @@ RC=llvm-windres RC_x86_64_pc_windows_gnu=llvm-windres cargo zigbuild --release -
 
 ```sh
 cargo run -p cominorsa-cli -- --help
+cargo run -p cominorsa-cli -- --db <crm.db> init
 cargo run -p cominorsa-cli -- --db <crm.db> --json status
 scripts/e2e-cli.sh
 ```
 
 | Group | Commands |
 |---|---|
-| State | `status`, `export`, `agenda`, `migrate` |
+| State | `init`, `status`, `export`, `agenda`, `migrate` |
 | `lead` | `add`, `list`, `show`, `summary`, `advance`, `assign`, `whatsapp` |
 | `prospect` | `import`, `enrich`, `search`, `count`, `convert` |
 | `case` | `list`, `show`, `close` |
@@ -47,7 +48,19 @@ scripts/e2e-cli.sh
 | `settings` | `show`, `set` |
 | `backup` | `create`, `restore` |
 
-The database path is mandatory, through `--db` or `COMINORSA_DB_PATH`; the CLI has no default location, so it cannot reach the app's real data by accident. A command that only reads opens the file read-only: it never creates or migrates a database. On an older schema it fails with `schema_outdated`, which names both versions and `cominorsa migrate`; on a newer one it fails with `schema_newer`. SQLite may leave an empty `-wal` and a `-shm` file beside the database after a read; the database file itself does not change. `migrate` copies the database beside itself first, and it is the explicit way to upgrade. Commands that write migrate on open, as the app does.
+The database path is mandatory, through `--db` or `COMINORSA_DB_PATH`; the CLI has no default location, so it cannot reach the app's real data by accident.
+
+The CLI never creates or upgrades a database by itself. `init` creates a new one and refuses any existing file with `database_exists`. Every other command checks the file before it validates its own arguments, and a refused file stays byte-identical:
+
+| Database | Result |
+|---|---|
+| Missing | `database_missing`; nothing is created |
+| Older schema | `schema_outdated`, naming both versions and `cominorsa migrate` |
+| Newer schema | `schema_newer`; the journal mode does not change either |
+
+`migrate` is the only command that upgrades. It copies the database beside itself as `*.antes-de-migrar-*.db`, migrates a working copy, and replaces the database with a rename. If a migration fails, it reports `migration_failed`, the database stays as it was, and the copy stays beside it. Close the app before migrating. `backup restore` is the one other path that changes the schema: an older backup is brought to the current schema before it replaces the database, and the backup file itself does not change.
+
+A command that only reads opens the file read-only. SQLite may leave an empty `-wal` and a `-shm` file beside the database after a read; the database file itself does not change. The desktop app is separate: it still migrates on startup.
 
 | Exit code | Meaning |
 |---|---|

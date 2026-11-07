@@ -286,3 +286,32 @@ async fn quote_counters_list_every_year_in_order() {
         ]
     );
 }
+
+#[tokio::test]
+async fn opening_an_existing_database_does_not_create_one() {
+    let scratch = TempDatabase::new();
+
+    assert!(SqliteLeads::open_existing(&scratch.path()).await.is_err());
+
+    assert!(!scratch.path().exists());
+}
+
+#[tokio::test]
+async fn a_failed_upgrade_leaves_the_database_and_removes_its_working_copy() {
+    let scratch = TempDatabase::new();
+    let database = scratch.path();
+    let store = SqliteLeads::open(&database).await.unwrap();
+    store.close().await;
+    let before = fs::read(&database).unwrap();
+    let not_a_database = scratch.0.join("copy.db");
+    fs::write(&not_a_database, "not a database").unwrap();
+
+    assert!(
+        SqliteLeads::upgrade(&database, &not_a_database)
+            .await
+            .is_err()
+    );
+
+    assert_eq!(fs::read(&database).unwrap(), before);
+    assert!(!database.with_extension("migrating.db").exists());
+}

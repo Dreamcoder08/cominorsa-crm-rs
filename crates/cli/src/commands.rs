@@ -9,11 +9,11 @@ use cominorsa_application::{
     AppError, BillingChange, BillingEdit, Clock, Context, FormValues, Ids, MilestoneValues,
     PipelineSummary, ProspectConversion, QuoteEdit, QuoteLineValues, QuoteValues, SettingsChange,
     add_lead, advance_lead, agenda, apply_billing, assign_lead, billing_change, close_case,
-    close_warning, closing_notice, convert_prospect, find_case, find_lead, find_milestone,
-    find_quote, find_stored_case, lead_quotes, matches_query, migrate_database,
-    milestone_gap_warning, next_follow_up, open_for_reading, reschedule_step, restore_backup,
-    run_backup, save_billing, save_quote_edit, save_quote_pdf, send_quote, set_step_done, snapshot,
-    status, suggested_total_note, update_settings,
+    close_warning, closing_notice, convert_prospect, create_database, find_case, find_lead,
+    find_milestone, find_quote, find_stored_case, lead_quotes, matches_query, migrate_database,
+    milestone_gap_warning, next_follow_up, open_for_reading, open_for_writing, reschedule_step,
+    restore_backup, run_backup, save_billing, save_quote_edit, save_quote_pdf, send_quote,
+    set_step_done, snapshot, status, suggested_total_note, update_settings,
 };
 use cominorsa_domain::{
     BillingMilestone, BillingSummary, CaseFile, CaseRepository, LeadRepository, ProspectKind,
@@ -76,20 +76,12 @@ impl From<ImportError> for Failure {
     }
 }
 
-async fn existing_store(path: &Path) -> Result<SqliteLeads, AppError> {
-    if !path.exists() {
-        return Err(AppError::storage(
-            "database_not_found",
-            format!("No existe la base de datos {}", path.display()),
-        ));
-    }
+/// The importer opens the file itself, and that open migrates and creates, so
+/// a CLI import needs the same checks as every other write first.
+async fn ensure_writable(path: &Path) -> Result<(), AppError> {
+    open_for_writing(path).await?.close().await;
 
-    Ok(SqliteLeads::open(path).await?)
-}
-
-/// A store for a write. Writes keep the app's behavior: they migrate on open.
-async fn writable_store(path: &Path) -> Result<SqliteLeads, AppError> {
-    Ok(SqliteLeads::open(path).await?)
+    Ok(())
 }
 
 /// The path must be explicit. There is deliberately no default location, so
@@ -114,6 +106,13 @@ pub async fn run(cli: Cli) -> Result<Reply, Failure> {
     let mut context = Context::new(Clock::fixed(cli.today, cli.now), ids);
 
     match cli.command {
+        Command::Init => {
+            let version = create_database(&path).await?;
+            Ok(Reply::new(
+                json!({"created": true, "schema_version": version}),
+                format!("Base creada en la versión {version}."),
+            ))
+        }
         Command::Status => {
             let store = open_for_reading(&path).await?;
             let found = status(&store).await?;
@@ -190,7 +189,7 @@ async fn lead(path: &Path, command: LeadCommand, context: &mut Context) -> Resul
             owner,
             follow_up,
         } => {
-            let store = writable_store(path).await?;
+            let store = open_for_writing(path).await?;
             let follow_up_on = match follow_up {
                 Some(date) => date,
                 None => {
@@ -261,7 +260,7 @@ async fn lead(path: &Path, command: LeadCommand, context: &mut Context) -> Resul
             )
         }
         LeadCommand::Advance { id } => {
-            let store = existing_store(path).await?;
+            let store = open_for_writing(path).await?;
             let moved = advance_lead(&store, id, context).await?;
             store.close().await;
             let text = match &moved.case {
@@ -281,7 +280,7 @@ async fn lead(path: &Path, command: LeadCommand, context: &mut Context) -> Resul
             )
         }
         LeadCommand::Assign { id, owner } => {
-            let store = existing_store(path).await?;
+            let store = open_for_writing(path).await?;
             let lead = assign_lead(&store, id, &owner).await?;
             store.close().await;
             let text = format!("{} queda a cargo de {owner}.", lead.name());
@@ -323,6 +322,7 @@ async fn prospect(
 ) -> Result<Reply, Failure> {
     let reply = match command {
         ProspectCommand::Import { companies, people } => {
+            ensure_writable(path).await?;
             let report = import(path, &companies, &people).await?;
             let text = format!(
                 "Prospectos nuevos: {}\nProspectos totales: {}",
@@ -338,6 +338,7 @@ async fn prospect(
             )
         }
         ProspectCommand::Enrich { sunat } => {
+            ensure_writable(path).await?;
             let report = enrich(path, &sunat).await?;
             let text = format!("Empresas actualizadas: {}", report.updated);
             Reply::new(
@@ -374,7 +375,7 @@ async fn prospect(
             owner,
             follow_up,
         } => {
-            let store = existing_store(path).await?;
+            let store = open_for_writing(path).await?;
             let conversion = ProspectConversion {
                 name,
                 kind: kind.as_deref().map(parse_kind).transpose()?,
@@ -398,7 +399,7 @@ async fn prospect(
 
 async fn case(path: &Path, command: CaseCommand, context: &mut Context) -> Result<Reply, Failure> {
     let store = match command {
-        CaseCommand::Close { .. } => existing_store(path).await?,
+        CaseCommand::Close { .. } => open_for_writing(path).await?,
         CaseCommand::List | CaseCommand::Show { .. } => open_for_reading(path).await?,
     };
     let reply = match command {
@@ -458,7 +459,7 @@ async fn case(path: &Path, command: CaseCommand, context: &mut Context) -> Resul
 }
 
 async fn step(path: &Path, command: StepCommand, context: &Context) -> Result<Reply, Failure> {
-    let store = existing_store(path).await?;
+    let store = open_for_writing(path).await?;
     let today = context.clock.today();
     let reply = match command {
         StepCommand::Done { id } => {
@@ -551,7 +552,7 @@ async fn billing(
     command: BillingCommand,
     context: &mut Context,
 ) -> Result<Reply, Failure> {
-    let store = existing_store(path).await?;
+    let store = open_for_writing(path).await?;
     let draft = MilestoneValues::default();
     let reply = match command {
         BillingCommand::Total { case, amount } => {
@@ -654,7 +655,7 @@ async fn quote(
     let store = if reads {
         open_for_reading(path).await?
     } else {
-        existing_store(path).await?
+        open_for_writing(path).await?
     };
     let today = context.clock.today();
     let blank = QuoteValues::default();
@@ -765,7 +766,7 @@ async fn settings(path: &Path, command: SettingsCommand) -> Result<Reply, Failur
             Reply::new(data, text)
         }
         SettingsCommand::Set(arguments) => {
-            let store = writable_store(path).await?;
+            let store = open_for_writing(path).await?;
             let saved = update_settings(&store, settings_change(*arguments)).await?;
             store.close().await;
             Reply::new(
@@ -779,7 +780,7 @@ async fn settings(path: &Path, command: SettingsCommand) -> Result<Reply, Failur
 }
 
 async fn backup(path: &Path, command: BackupCommand, context: &Context) -> Result<Reply, Failure> {
-    let store = existing_store(path).await?;
+    let store = open_for_writing(path).await?;
     let reply = match command {
         BackupCommand::Create { folder } => {
             let saved = run_backup(&store, folder.as_deref(), context).await?;

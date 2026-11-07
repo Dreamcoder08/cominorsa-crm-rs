@@ -22,8 +22,14 @@ impl Scratch {
         Self(path)
     }
 
+    /// A database made the only way the CLI allows, on first use.
     fn db(&self) -> PathBuf {
-        self.0.join("crm.db")
+        let db = self.0.join("crm.db");
+        if !db.exists() {
+            let created = run(&db, &["init"]);
+            assert!(created.status.success(), "{created:?}");
+        }
+        db
     }
 
     fn file(&self, name: &str) -> PathBuf {
@@ -199,7 +205,7 @@ fn the_database_can_come_from_the_environment() {
     let scratch = Scratch::new();
 
     let output = binary()
-        .env("COMINORSA_DB_PATH", scratch.db())
+        .env("COMINORSA_DB_PATH", scratch.file("crm.db"))
         .args(["--json", "settings", "show"])
         .output()
         .unwrap();
@@ -254,10 +260,10 @@ fn a_read_never_creates_the_database() {
         vec!["lead", "list"],
         vec!["settings", "show"],
     ] {
-        let (code, _) = failure(&run(&scratch.db(), &command), 3);
-        assert_eq!(code, "database_not_found");
+        let (code, _) = failure(&run(&scratch.file("crm.db"), &command), 3);
+        assert_eq!(code, "database_missing");
     }
-    assert!(!scratch.db().exists());
+    assert!(!scratch.file("crm.db").exists());
 }
 
 // Output contract and exit codes.
@@ -288,11 +294,11 @@ fn every_subcommand_has_help() {
 fn an_unknown_command_is_a_usage_error() {
     let scratch = Scratch::new();
 
-    let (code, message) = failure(&run(&scratch.db(), &["nonsense"]), 2);
+    let (code, message) = failure(&run(&scratch.file("crm.db"), &["nonsense"]), 2);
 
     assert_eq!(code, "usage");
     assert!(message.contains("nonsense"), "{message}");
-    assert!(!scratch.db().exists());
+    assert!(!scratch.file("crm.db").exists());
 }
 
 #[test]
@@ -741,7 +747,7 @@ fn prospects_import_through_the_existing_importer_and_repeat_safely() {
 
     assert_eq!(first["added"], 2);
     assert_eq!(first["total"], 2);
-    assert_eq!(first["backup"], Value::Null);
+    assert!(Path::new(text(&first["backup"])).exists());
     assert_eq!(repeat["added"], 0);
     assert_eq!(export(&scratch.db()), state);
 }
@@ -1053,10 +1059,10 @@ fn migrating_a_missing_database_creates_nothing() {
     let scratch = Scratch::new();
 
     assert_eq!(
-        failure(&run(&scratch.db(), &["migrate"]), 3).0,
-        "database_not_found"
+        failure(&run(&scratch.file("crm.db"), &["migrate"]), 3).0,
+        "database_missing"
     );
-    assert!(!scratch.db().exists());
+    assert!(!scratch.file("crm.db").exists());
 }
 
 // Billing.
