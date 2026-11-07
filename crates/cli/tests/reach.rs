@@ -193,3 +193,23 @@ fn the_readme_lists_every_error_code() {
         .collect();
     assert!(missing.is_empty(), "{missing:?}");
 }
+
+#[test]
+fn lead_list_returns_the_follow_up_of_lead_show() {
+    let scratch = Scratch::new();
+    let db = scratch.database();
+    let id = add_lead(&db, "Ana", "900000001", "DAC");
+
+    for (day, status) in [
+        ("2026-03-02", "upcoming"),
+        ("2026-03-20", "today"),
+        ("2026-03-21", "overdue"),
+    ] {
+        let shown = data(&run_on(&db, day, &["lead", "show", &id]));
+        let listed = data(&run_on(&db, day, &["lead", "list"]));
+
+        assert_eq!(shown["follow_up"]["status"], status);
+        assert_eq!(listed["leads"][0]["follow_up"], shown["follow_up"]);
+        assert_eq!(listed["leads"][0]["id"], shown["lead"]["id"]);
+    }
+}

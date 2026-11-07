@@ -217,3 +217,21 @@ fn a_failed_migration_leaves_the_original_and_keeps_the_copy() {
             .any(|name| name.contains("migrating"))
     );
 }
+
+#[test]
+fn a_rejected_write_on_a_current_database_leaves_the_file_unchanged() {
+    let scratch = Scratch::new();
+    let db = scratch.database();
+    let bytes = fs::read(&db).unwrap();
+
+    assert_eq!(
+        failure(&run(&db, &["lead", "advance", NO_ID]), 1).0,
+        "lead_not_found"
+    );
+
+    assert_eq!(fs::read(&db).unwrap(), bytes);
+    // SQLite may leave an empty WAL beside the file; content would be a write.
+    let wal = fs::metadata(scratch.file("crm.db-wal")).map_or(0, |found| found.len());
+    assert_eq!(wal, 0);
+    assert_eq!(sqlite(&db, "PRAGMA journal_mode"), "wal");
+}

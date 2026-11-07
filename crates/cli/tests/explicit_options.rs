@@ -168,3 +168,57 @@ fn a_quote_pdf_never_replaces_the_database() {
         refused(&db, output, 1, "pdf_target_is_database", &before);
     }
 }
+
+#[test]
+fn a_quote_pdf_never_replaces_a_hard_link_to_the_database() {
+    let scratch = Scratch::new();
+    let db = scratch.database();
+    let number = quote(&db);
+    let before = export(&db);
+    let bytes = fs::read(&db).unwrap();
+    let link = scratch.file("link.pdf");
+    fs::hard_link(&db, &link).unwrap();
+    let out = link.display().to_string();
+
+    let forced = run(&db, &["quote", "pdf", &number, "--out", &out, "--force"]);
+    refused(&db, forced, 1, "pdf_target_is_database", &before);
+    let plain = run(&db, &["quote", "pdf", &number, "--out", &out]);
+    refused(&db, plain, 1, "pdf_target_is_database", &before);
+
+    assert_eq!(fs::read(&db).unwrap(), bytes);
+}
+
+#[test]
+fn a_quote_pdf_never_replaces_a_hard_link_to_a_database_sidecar() {
+    let scratch = Scratch::new();
+    let db = scratch.database();
+    let number = quote(&db);
+    let before = export(&db);
+    let sidecar = scratch.file("crm.db-journal");
+    fs::write(&sidecar, b"").unwrap();
+    let link = scratch.file("journal.pdf");
+    fs::hard_link(&sidecar, &link).unwrap();
+    let out = link.display().to_string();
+
+    let output = run(&db, &["quote", "pdf", &number, "--out", &out, "--force"]);
+
+    refused(&db, output, 1, "pdf_target_is_database", &before);
+    assert!(fs::read(&sidecar).unwrap().is_empty());
+}
+
+#[test]
+fn a_plain_copy_of_the_database_can_still_be_replaced() {
+    let scratch = Scratch::new();
+    let db = scratch.database();
+    let number = quote(&db);
+    let copy = scratch.file("copy.pdf");
+    fs::copy(&db, &copy).unwrap();
+    let out = copy.display().to_string();
+
+    data(&run(
+        &db,
+        &["quote", "pdf", &number, "--out", &out, "--force"],
+    ));
+
+    assert!(fs::read(&copy).unwrap().starts_with(b"%PDF-"));
+}

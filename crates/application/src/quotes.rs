@@ -461,13 +461,42 @@ fn resolved(path: &Path) -> PathBuf {
     })
 }
 
+/// What marks one stored file, whatever name reaches it.
+#[cfg(unix)]
+fn file_identity(metadata: &fs::Metadata) -> impl Eq {
+    use std::os::unix::fs::MetadataExt;
+
+    (metadata.dev(), metadata.ino())
+}
+
+/// Stable Rust has no file index on Windows, and asking the system needs
+/// `unsafe`. Hard links share these values, so a link is caught; only another
+/// file that matches them all is refused by mistake.
+#[cfg(not(unix))]
+fn file_identity(metadata: &fs::Metadata) -> impl Eq {
+    (
+        metadata.len(),
+        metadata.created().ok(),
+        metadata.modified().ok(),
+    )
+}
+
+/// Whether both paths reach one stored file, as hard links do.
+fn is_same_file(left: &Path, right: &Path) -> bool {
+    match (fs::metadata(left), fs::metadata(right)) {
+        (Ok(left), Ok(right)) => file_identity(&left) == file_identity(&right),
+        _ => false,
+    }
+}
+
 fn is_database_file(path: &Path, database: &Path) -> bool {
     let wanted = resolved(path);
 
     ["", "-wal", "-shm", "-journal"].iter().any(|suffix| {
         let mut name = OsString::from(database);
         name.push(suffix);
-        wanted == resolved(Path::new(&name))
+        let file = Path::new(&name);
+        wanted == resolved(file) || is_same_file(path, file)
     })
 }
 

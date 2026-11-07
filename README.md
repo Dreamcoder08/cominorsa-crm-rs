@@ -89,9 +89,9 @@ JSON keys and error codes are stable and in English. Dates are ISO 8601, money i
 
 For reproducible runs, `--today <AAAA-MM-DD>` fixes the day, `--now <seconds>` fixes the instant, and `--id-seed <text>` derives new ids from the text. A day alone means noon in Peru. A seed names one request, so use a different one per command. Repeating the identical request with its seed changes nothing in `lead add`, `prospect convert`, `quote create`, `quote version`, `billing add`, and `case close`. When a seed derives an id that already belongs to another record of that kind, the command fails with `id_seed_reused` and nothing changes. Without these flags the CLI uses the system clock and the domain's generated ids, like the app. Two runs of the same commands with the same flags give byte-identical exports, as long as stored paths such as the backup folder match.
 
-`quote pdf --out` refuses an existing file unless `--force` is given, and always refuses the database and its `-wal`, `-shm`, and `-journal` files. `settings set --remove-member` refuses a name that is not on the team, and `billing edit` needs at least one field. Only a team member can own a lead: `lead add`, `lead assign`, and `prospect convert` refuse any other name, and a blank `--owner` clears it.
+`quote pdf --out` refuses an existing file unless `--force` is given, and always refuses the database and its `-wal`, `-shm`, and `-journal` files, under any name, including a hard link to them. `settings set --remove-member` refuses a name that is not on the team, and `billing edit` needs at least one field. Only a team member can own a lead: `lead add`, `lead assign`, and `prospect convert` refuse any other name, and a blank `--owner` clears it.
 
-`quote preview --line` returns the totals of some lines at the stored IGV rate, and `settings whatsapp-preview` renders the stored template for a sample client, or a `--template` to try; neither saves anything. `lead show` adds `follow_up`, its status for the day: `overdue`, `today`, `upcoming`, or `closed`. Commands that change a quote add `notice`, the sentence the app shows.
+`quote preview --line` returns the totals of some lines at the stored IGV rate, and `settings whatsapp-preview` renders the stored template for a sample client, or a `--template` to try; neither saves anything. `lead show` and each row of `lead list` add `follow_up`, the status for the day: `overdue`, `today`, `upcoming`, or `closed`. Commands that change a quote add `notice`, the sentence the app shows.
 
 `export` returns `schema_version`, `leads`, `cases`, `quotes`, `quote_counters`, `prospects`, and `settings` in a stable order, including closed cases with nothing left to collect. `status` returns `schema_version`, `integrity_check`, and `counts`.
 
@@ -158,6 +158,8 @@ Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adap
 | Prospects | Concession titleholders without phone, RUC, or email; potential service is inferred, not verified |
 | Backups | Manual to a user-chosen folder, automatic before an import, and verified restore from Settings; no scheduled backup yet |
 | Disk encryption | Not provided by the app; enable it on the laptop |
+| Rollback-journal databases | Every write opens in WAL mode, so a rejected write on a database in the rollback journal keeps its rows but changes two header bytes. `init`, an upgrade, and a restore all leave WAL, so this needs a file altered outside the app |
+| Hard links on Windows | Stable Rust has no file index there, so a PDF target is matched to the database by size, creation, and modification time; another file matching all three is refused too |
 | Windows | Cross-compiled with `cargo zigbuild --target x86_64-pc-windows-gnu`; not run on Windows yet; requires the WebView2 runtime. The `.github/workflows/windows.yml` build needs an active GitHub billing state |
 
 ## Measured baseline

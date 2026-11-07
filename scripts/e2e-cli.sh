@@ -163,6 +163,9 @@ CSV
     expect "lead follow-up" "$day" "$(cli lead show "$lead" | jq -r '.lead.follow_up_on')"
     expect "repeating a seeded conversion creates nothing" false "$(cli "${convert[@]}" | jq '.created')"
     expect "leads" 1 "$(cli lead list | jq '.leads | length')"
+    expect "lead list repeats the follow-up of lead show" \
+        "$(cli lead show "$lead" | jq -c '.follow_up')" \
+        "$(cli lead list | jq -c '.leads[0].follow_up')"
     url="$(cli lead whatsapp "$lead" | jq -r '.url')"
     expect "only a prepared WhatsApp URL" "https://wa.me/51987654321" "${url%%\?*}"
 
@@ -397,6 +400,10 @@ echo "existing" >victim.csv
 refused 1 pdf_target_exists quote pdf "$primera" --out victim.csv
 expect "a refused PDF keeps the file" existing "$(cat victim.csv)"
 refused 1 pdf_target_is_database quote pdf "$primera" --out seeds.db --force
+ln seeds.db hard-link.pdf
+database_hash="$(file_hash seeds.db)"
+refused 1 pdf_target_is_database quote pdf "$primera" --out hard-link.pdf --force
+expect "file hash after a PDF on a hard link" "$database_hash" "$(file_hash seeds.db)"
 "$binary" --db "$db" --json quote pdf "$primera" --out victim.csv --force >/dev/null
 expect "force writes the PDF" "%PDF" "$(head -c 4 victim.csv)"
 db=crm.db

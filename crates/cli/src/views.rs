@@ -24,6 +24,17 @@ pub fn lead(lead: &Lead) -> Value {
     })
 }
 
+pub fn follow_up(follow_up: &FollowUp) -> Value {
+    json!({"status": follow_up.class(), "label": follow_up.label()})
+}
+
+/// A lead with its follow-up status for the day, as `lead show` reports it.
+pub fn listed_lead(found: &Lead, today: Date) -> Value {
+    let mut listed = lead(found);
+    listed["follow_up"] = follow_up(&FollowUp::of(found, today));
+    listed
+}
+
 pub fn step(step: &CaseStep) -> Value {
     json!({
         "id": step.id().to_string(),

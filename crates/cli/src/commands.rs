@@ -218,7 +218,11 @@ async fn lead(path: &Path, command: LeadCommand, context: &mut Context) -> Resul
                 .map(|lead| format!("{} {} ({})", lead.id(), lead.name(), lead.stage().label()))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let data = found.iter().map(views::lead).collect::<Vec<_>>();
+            let today = context.clock.today();
+            let data = found
+                .iter()
+                .map(|lead| views::listed_lead(lead, today))
+                .collect::<Vec<_>>();
             Reply::new(json!({"leads": data}), text)
         }
         LeadCommand::Show { id } => {
@@ -235,7 +239,7 @@ async fn lead(path: &Path, command: LeadCommand, context: &mut Context) -> Resul
             Reply::new(
                 json!({
                     "lead": views::lead(&lead),
-                    "follow_up": {"status": follow_up.class(), "label": follow_up.label()},
+                    "follow_up": views::follow_up(&follow_up),
                 }),
                 text,
             )
