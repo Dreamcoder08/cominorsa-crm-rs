@@ -91,6 +91,38 @@ fn rejects_an_invalid_ruc_without_echoing_it() {
     assert!(!error.to_string().contains("20999999999"));
 }
 
+#[test]
+fn rejects_repeated_companies_in_the_tax_file() {
+    let row = "Doble,unico,20123456786,DOBLE,ACTIVO,HABIDO,200101,CAL";
+    let other = "Doble,unico,20100070970,DOBLE,ACTIVO,HABIDO,200101,CAL";
+    let text = format!("{TAX_HEADER}\n{row}\n{other}\n");
+
+    let error = parse_tax_records(text.as_bytes()).unwrap_err();
+
+    assert!(matches!(error, ImportError::Duplicate { line: 3 }));
+}
+
+#[test]
+fn rejects_unknown_match_labels_instead_of_confirming_them() {
+    for label in ["ambiguo", "Aproximado", "otro"] {
+        let text =
+            format!("{TAX_HEADER}\nEmpresa,{label},20123456786,E,ACTIVO,HABIDO,200101,CAL\n");
+
+        let error = parse_tax_records(text.as_bytes()).unwrap_err();
+
+        assert!(
+            matches!(
+                error,
+                ImportError::InvalidValue {
+                    line: 2,
+                    column: "match"
+                }
+            ),
+            "{label} must be rejected"
+        );
+    }
+}
+
 struct Scratch(PathBuf);
 
 impl Scratch {

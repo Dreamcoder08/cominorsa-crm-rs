@@ -41,6 +41,7 @@ const TAX_COLUMNS: [&str; 6] = [
     "domicilio",
 ];
 const APPROXIMATE_MATCH: &str = "aproximado";
+const CONFIRMED_MATCHES: [&str; 2] = ["unico", "unico_activo"];
 
 #[derive(Debug, Error)]
 pub enum ImportError {
@@ -78,6 +79,7 @@ pub fn parse_tax_records(source: impl Read) -> Result<Vec<(String, TaxRecord)>, 
     let headers = reader.headers().map_err(unreadable)?.clone();
     let positions = positions_of(&TAX_COLUMNS, &headers)?;
     let mut records = Vec::new();
+    let mut names = HashSet::new();
 
     for record in reader.records() {
         let record = record.map_err(unreadable)?;
@@ -91,6 +93,19 @@ pub fn parse_tax_records(source: impl Read) -> Result<Vec<(String, TaxRecord)>, 
             line,
             column: "ruc",
         })?;
+        let approximate = match text(1).as_str() {
+            APPROXIMATE_MATCH => true,
+            label if CONFIRMED_MATCHES.contains(&label) => false,
+            _ => {
+                return Err(ImportError::InvalidValue {
+                    line,
+                    column: "match",
+                });
+            }
+        };
+        if !names.insert(text(0)) {
+            return Err(ImportError::Duplicate { line });
+        }
 
         records.push((
             text(0),
@@ -99,7 +114,7 @@ pub fn parse_tax_records(source: impl Read) -> Result<Vec<(String, TaxRecord)>, 
                 status: text(3),
                 condition: text(4),
                 address: text(5),
-                approximate: text(1) == APPROXIMATE_MATCH,
+                approximate,
             },
         ));
     }
