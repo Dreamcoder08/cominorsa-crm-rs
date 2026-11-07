@@ -930,7 +930,12 @@ impl SettingsRepository for SqliteLeads {
                     settings.restore_whatsapp_template(value);
                 }
                 BACKUP_DIRECTORY_KEY => settings.set_backup_directory(&value),
-                LAST_BACKUP_AT_KEY => settings.record_backup(value.parse().map_err(failure)?),
+                // A corrupt time means "no backup yet", so the next one runs.
+                LAST_BACKUP_AT_KEY => {
+                    if let Ok(at) = value.parse() {
+                        settings.record_backup(at);
+                    }
+                }
                 IGV_RATE_KEY => settings.restore_igv_rate(&value),
                 BACKUP_INTERVAL_DAYS_KEY => settings.restore_backup_interval_days(&value),
                 BACKUP_KEEP_KEY => settings.restore_backup_keep(&value),

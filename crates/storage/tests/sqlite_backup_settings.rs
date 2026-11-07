@@ -67,3 +67,28 @@ async fn an_unreadable_stored_value_keeps_the_default_and_never_blocks() {
     assert_eq!(loaded.backup_interval_days(), 1);
     assert_eq!(loaded.backup_keep(), 14);
 }
+
+#[tokio::test]
+async fn an_unreadable_last_backup_time_is_ignored_and_never_blocks() {
+    let database = TempDatabase::new();
+    SqliteLeads::open(&database.path())
+        .await
+        .unwrap()
+        .close()
+        .await;
+    let raw = SqlitePool::connect_with(SqliteConnectOptions::new().filename(database.path()))
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO settings VALUES ('last_backup_at', 'ayer'), ('theme', 'dark')")
+        .execute(&raw)
+        .await
+        .unwrap();
+    raw.close().await;
+
+    let reopened = SqliteLeads::open(&database.path()).await.unwrap();
+    let loaded = reopened.load().await.unwrap();
+    reopened.close().await;
+
+    assert_eq!(loaded.last_backup_at(), None);
+    assert_eq!(loaded.theme.code(), "dark");
+}
