@@ -15,7 +15,7 @@ Data is stored in the operating system's application data folder as `crm.db`. Se
 
 ## Windows
 
-The `Windows build` workflow runs the tests and publishes `cominorsa-crm-windows-x64.zip` as a workflow artifact. The package holds `cominorsa-desktop.exe`, `cominorsa-import.exe`, and the `cominorsa.exe` CLI, and never customer data.
+The `Windows build` workflow runs the tests and publishes `cominorsa-crm-windows-x64.zip` as a workflow artifact. The package holds `cominorsa-desktop.exe`, `cominorsa-import.exe`, the `cominorsa.exe` CLI, and the `cominorsa-mcp.exe` MCP server, and never customer data.
 
 Data lives in `%APPDATA%\COMINORSA\CRM\data\crm.db`.
 
@@ -97,6 +97,39 @@ For reproducible runs, `--today <AAAA-MM-DD>` fixes the day, `--now <seconds>` f
 
 `export` returns `schema_version`, `leads`, `cases`, `quotes`, `quote_counters`, `prospects`, and `settings` in a stable order, including closed cases with nothing left to collect. `status` returns `schema_version`, `integrity_check`, and `counts`.
 
+## MCP server
+
+`cominorsa-mcp` is a stdio MCP server built on the official Rust SDK, `rmcp`. It is a wrapper like the desktop app: every tool calls the same application use cases as the CLI, with the CLI's checks, codes, and JSON shapes, and no rule of its own.
+
+```sh
+cargo run -p cominorsa-mcp -- --db <crm.db>
+cargo run -p cominorsa-mcp -- --db <crm.db> --allow-writes
+```
+
+The database comes only from `--db` or `COMINORSA_DB_PATH`; there is no default location. Without one the server still starts and lists its tools, and every call answers `database_missing`. Like the CLI, it never creates or migrates a database: a missing file answers `database_missing`, an older schema `schema_outdated`, a newer one `schema_newer`, and the file stays byte-identical. Create a database with `cominorsa init` and upgrade one with `cominorsa migrate`.
+
+Point it only at a database you are authorized to use. An example client configuration, with a placeholder path:
+
+```json
+{
+  "mcpServers": {
+    "cominorsa": {
+      "command": "cominorsa-mcp",
+      "args": ["--db", "/ruta/autorizada/crm.db"]
+    }
+  }
+}
+```
+
+| Mode | Tools |
+|---|---|
+| Default, marked read-only | `status`, `agenda`, `lead_list`, `lead_show`, `prospect_search`, `prospect_count`, `case_list`, `case_show`, `quote_list`, `quote_show`, `settings_show` |
+| Also with `--allow-writes` | `lead_add`, `lead_assign`, `lead_consent`, `lead_revoke_consent`, `step_done`, `step_date`, `milestone_pay` |
+
+Write tools exist only with the `--allow-writes` flag; no environment variable enables them. None is destructive: there is no restore, delete, backup pruning, or migration through MCP, and no messaging tool. Read tools open the database read-only.
+
+A success is `{"data": ...}` with the shape of the matching `cominorsa --json` command, and a failure is a tool error holding `{"error": {"code", "message"}}` with the CLI's codes; invalid input answers `usage`. Storage failures carry a fixed message per code, never a file path or driver detail. `settings_show` reports `backup_directory_set`, true or false, instead of the backup folder path. Lists take `limit`: 1 to 1000 rows, 200 by default, and `prospect_search` 1 to 500, 100 by default. Text inputs have length limits, such as 200 characters for a name or a query. Tools use the system clock and generated ids; `--today`, `--now`, and `--id-seed` stay CLI-only. stdout carries only protocol messages; the server writes its one status line to stderr.
+
 ## Origin and consent
 
 Each lead records its origin and its last consent decision: given or revoked, with the date and the source text. `lead add --origin` takes `web_form`, `inbound_whatsapp`, `inbound_call`, `referral`, `event`, `existing_client`, `prospect`, or `other`, the default. The first three mean the client started the contact, so the lead records consent "El cliente inició el contacto" dated that day. `prospect convert` creates a lead with origin `prospect` and no consent. A renewal lead has origin `existing_client` and copies the consent of the lead that opened the case.
@@ -153,6 +186,7 @@ It needs an existing database at the current schema, like the import. The file c
 | `crates/importer` | `cominorsa-import` CLI for prospect CSV files | `domain`, `storage` |
 | `crates/application` | Use cases, display rules, and the quote PDF, free of UI types | `domain`, `storage` |
 | `crates/cli` | `cominorsa` CLI: argument parsing and JSON shapes | `application`, `domain`, `importer`, `storage` |
+| `crates/mcp` | `cominorsa-mcp` MCP server over stdio: tool inputs and the CLI's JSON shapes | `application`, `domain` |
 | `crates/desktop` | Dioxus desktop UI and startup | `application`, `domain`, `storage` |
 
 Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adapter can reuse `domain` and replace SQLite behind `LeadRepository` and `CaseRepository`. Only the application's backup and inspection code, the importer, and the desktop name `SqliteLeads`: the desktop opens it at startup and passes it to the use cases.
