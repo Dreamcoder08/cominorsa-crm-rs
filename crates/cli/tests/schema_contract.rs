@@ -174,12 +174,7 @@ fn migrate_upgrades_and_keeps_rows_and_a_copy() {
     );
     assert_eq!(sqlite(&copy, "SELECT COUNT(*) FROM leads"), "1");
     assert_eq!(data(&run(&db, &["status"]))["counts"]["leads"], 1);
-    assert!(
-        !scratch
-            .names()
-            .iter()
-            .any(|name| name.contains("migrating"))
-    );
+    assert!(!scratch.names().iter().any(|name| name.contains("migrando")));
 }
 
 #[test]
@@ -210,12 +205,7 @@ fn a_failed_migration_leaves_the_original_and_keeps_the_copy() {
         sqlite(&scratch.file(&copy), "SELECT COUNT(*) FROM leads"),
         "1"
     );
-    assert!(
-        !scratch
-            .names()
-            .iter()
-            .any(|name| name.contains("migrating"))
-    );
+    assert!(!scratch.names().iter().any(|name| name.contains("migrando")));
 }
 
 #[test]

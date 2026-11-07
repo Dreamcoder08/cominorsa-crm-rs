@@ -121,14 +121,15 @@ pub async fn run(cli: Cli) -> Result<Reply, Failure> {
             let found = status(&store).await?;
             store.close().await;
             let text = format!(
-                "Esquema: {}\nIntegridad: {}\nLeads: {}\nExpedientes: {}\nExpedientes activos: {}\nCotizaciones: {}\nProspectos: {}",
+                "Esquema: {}\nIntegridad: {}\nLeads: {}\nExpedientes: {}\nExpedientes activos: {}\nCotizaciones: {}\nProspectos: {}\nConsentimientos ilegibles: {}",
                 found.schema_version,
                 found.integrity_check,
                 found.leads,
                 found.cases,
                 found.active_cases,
                 found.quotes,
-                found.prospects
+                found.prospects,
+                found.unreadable_consents
             );
             Ok(Reply::new(views::status(&found), text))
         }

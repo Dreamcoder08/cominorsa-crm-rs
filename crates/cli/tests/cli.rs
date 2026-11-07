@@ -592,7 +592,8 @@ fn export_is_stable_between_reads() {
             "quote_counters",
             "quotes",
             "schema_version",
-            "settings"
+            "settings",
+            "unreadable_rows"
         ]
     );
 }

@@ -8,7 +8,7 @@ use cominorsa_domain::{
     CaseFile, CaseRepository, Lead, LeadRepository, Prospect, ProspectRepository, Quote,
     QuoteRepository, Settings, SettingsRepository,
 };
-use cominorsa_storage::{QuoteCounter, SqliteLeads};
+use cominorsa_storage::{QuoteCounter, SqliteLeads, UpgradeError};
 
 use crate::{cases::is_active, context::Clock, error::AppError};
 
@@ -95,7 +95,9 @@ pub struct Migration {
 
 /// Brings a database to the required schema, after copying it beside itself.
 /// A database that is already current is not touched. The migrations run on a
-/// working copy, so when one fails the database stays as it was.
+/// working copy, so when one fails the database stays as it was. While another
+/// program has the database open, nothing is written and the answer is
+/// `database_busy`.
 pub async fn migrate_database(path: &Path, clock: &Clock) -> Result<Migration, AppError> {
     if !path.exists() {
         return Err(missing(path));
@@ -119,19 +121,25 @@ pub async fn migrate_database(path: &Path, clock: &Clock) -> Result<Migration, A
         });
     }
 
-    let safety_copy = path.with_extension(format!("antes-de-migrar-{}.db", clock.file_stamp()));
-    reader.backup_to(&safety_copy).await?;
     reader.close().await;
+    let safety_copy = path.with_extension(format!("antes-de-migrar-{}.db", clock.file_stamp()));
     SqliteLeads::upgrade(path, &safety_copy)
         .await
-        .map_err(|error| {
-            AppError::storage(
+        .map_err(|error| match error {
+            UpgradeError::Busy => AppError::storage(
+                "database_busy",
+                format!(
+                    "Otro programa tiene abierta la base {}. Ciérralo y vuelve a intentar: cominorsa migrate",
+                    path.display()
+                ),
+            ),
+            UpgradeError::Failed(error) => AppError::storage(
                 "migration_failed",
                 format!(
                     "No se pudo actualizar la base: {error}. Sigue en la versión {from} y su copia está en {}",
                     safety_copy.display()
                 ),
-            )
+            ),
         })?;
 
     Ok(Migration {
@@ -166,6 +174,8 @@ pub struct Snapshot {
     pub quote_counters: Vec<QuoteCounter>,
     pub prospects: Vec<Prospect>,
     pub settings: Settings,
+    /// Leads whose stored consent could not be read and load without one.
+    pub unreadable_consents: usize,
 }
 
 pub async fn snapshot(store: &SqliteLeads) -> Result<Snapshot, AppError> {
@@ -182,6 +192,7 @@ pub async fn snapshot(store: &SqliteLeads) -> Result<Snapshot, AppError> {
         quote_counters: store.quote_counters().await?,
         prospects,
         settings: store.load().await?,
+        unreadable_consents: store.unreadable_consents().await?,
     })
 }
 
@@ -198,6 +209,8 @@ pub struct Status {
     pub quotes: usize,
     pub prospects: usize,
     pub team_members: usize,
+    /// Leads whose stored consent could not be read and load without one.
+    pub unreadable_consents: usize,
 }
 
 pub async fn status(store: &SqliteLeads) -> Result<Status, AppError> {
@@ -214,5 +227,6 @@ pub async fn status(store: &SqliteLeads) -> Result<Status, AppError> {
         quotes: store.quotes().await?.len(),
         prospects: store.count().await?,
         team_members: store.load().await?.team().len(),
+        unreadable_consents: store.unreadable_consents().await?,
     })
 }

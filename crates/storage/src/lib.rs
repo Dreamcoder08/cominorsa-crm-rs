@@ -1,6 +1,14 @@
 //! SQLite adapter for the domain repository port.
 
-use std::{collections::HashMap, fs, path::Path};
+use std::{
+    collections::{HashMap, hash_map::DefaultHasher},
+    fs::{self, File, OpenOptions},
+    hash::{Hash, Hasher},
+    io::{self, ErrorKind},
+    path::{Path, PathBuf},
+    process,
+    time::Duration,
+};
 
 use cominorsa_domain::{
     BillingMilestone, BillingMilestoneRecord, BillingRepository, Case, CaseClosure, CaseFile,
@@ -10,9 +18,11 @@ use cominorsa_domain::{
     RepositoryError, Settings, SettingsRepository, TaxRecord, ThemePreference,
 };
 use sqlx::{
-    Row, Sqlite, SqliteExecutor, SqlitePool, Transaction,
+    Connection, Row, Sqlite, SqliteConnection, SqliteExecutor, SqlitePool, Transaction,
     migrate::Migrator,
-    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow},
+    sqlite::{
+        SqliteConnectOptions, SqliteJournalMode, SqliteLockingMode, SqlitePoolOptions, SqliteRow,
+    },
 };
 use time::{Date, format_description::well_known::Iso8601};
 use uuid::Uuid;
@@ -33,6 +43,8 @@ const UPSERT: &str = "INSERT INTO leads (id, name, phone, ruc, service, stage, f
         consent_given = excluded.consent_given,
         consent_on = excluded.consent_on,
         consent_source = excluded.consent_source";
+
+const SELECT_CONSENTS: &str = "SELECT consent_given, consent_on, consent_source FROM leads";
 
 const SELECT_ALL: &str = "SELECT id, name, phone, ruc, service, stage, follow_up_on, owner,
         renewal_of_case, origin, consent_given, consent_on, consent_source
@@ -175,6 +187,41 @@ const UPSERT_SETTING: &str = "INSERT INTO settings (key, value) VALUES (?1, ?2)
 
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
+/// SQLite's result code for a database another connection holds.
+const SQLITE_BUSY: i32 = 5;
+
+/// How many unique working names `upgrade` tries before it gives up.
+const WORKING_NAME_ATTEMPTS: u32 = 100;
+
+/// Why `upgrade` left the database as it was.
+#[derive(Debug)]
+pub enum UpgradeError {
+    /// Another connection has the database open or is using it.
+    Busy,
+    Failed(RepositoryError),
+}
+
+impl From<RepositoryError> for UpgradeError {
+    fn from(error: RepositoryError) -> Self {
+        Self::Failed(error)
+    }
+}
+
+impl From<sqlx::Error> for UpgradeError {
+    fn from(error: sqlx::Error) -> Self {
+        let busy = error
+            .as_database_error()
+            .and_then(|found| found.code())
+            .and_then(|code| code.parse::<i32>().ok())
+            .is_some_and(|code| code & 0xff == SQLITE_BUSY);
+        if busy {
+            Self::Busy
+        } else {
+            Self::Failed(failure(error))
+        }
+    }
+}
+
 /// The last quote number given in one year.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QuoteCounter {
@@ -189,6 +236,7 @@ pub struct SqliteLeads {
 
 impl SqliteLeads {
     /// Opens the database file, creating it and applying pending migrations.
+    /// It sets WAL mode, so only `init` and `migrate` reach it.
     pub async fn open(path: &Path) -> Result<Self, RepositoryError> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(failure)?;
@@ -227,11 +275,11 @@ impl SqliteLeads {
     }
 
     /// Opens an existing database to write, without creating or migrating it.
-    /// The caller has already checked its schema version.
+    /// The caller has already checked its schema version. The journal mode
+    /// stays as it is: changing it rewrites the file header, so a write that
+    /// is then rejected would still change the file.
     pub async fn open_existing(path: &Path) -> Result<Self, RepositoryError> {
-        let options = SqliteConnectOptions::new()
-            .filename(path)
-            .journal_mode(SqliteJournalMode::Wal);
+        let options = SqliteConnectOptions::new().filename(path);
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(options)
@@ -241,28 +289,52 @@ impl SqliteLeads {
         Ok(Self { pool })
     }
 
-    /// Migrates a working copy of `safety_copy` and only then puts it in place
-    /// of `database` with a rename, so a failed migration leaves `database` as
-    /// it was. Nothing may be writing to `database` meanwhile.
-    pub async fn upgrade(database: &Path, safety_copy: &Path) -> Result<(), RepositoryError> {
-        let working = database.with_extension("migrating.db");
-        remove_with_sidecars(&working);
+    /// Copies `database` to `safety_copy`, migrates a working copy of it, and
+    /// only then puts that copy in place of `database`, so a failed migration
+    /// leaves `database` as it was.
+    ///
+    /// The whole upgrade holds an exclusive lock on `database`. When another
+    /// connection has it open or in use, nothing is written and the answer is
+    /// [`UpgradeError::Busy`]. See `swap_locked` for what keeps a connection
+    /// that waits on the lock from writing to the replaced file.
+    pub async fn upgrade(database: &Path, safety_copy: &Path) -> Result<(), UpgradeError> {
+        let mut lock = lock_exclusively(database).await?;
+        let copied = async {
+            sqlx::query("VACUUM INTO ?1")
+                .bind(safety_copy.to_string_lossy().into_owned())
+                .execute(&mut lock)
+                .await?;
+            Ok::<_, UpgradeError>(working_copy(database, safety_copy)?)
+        }
+        .await;
+        let working = match copied {
+            Ok(working) => working,
+            Err(error) => {
+                let _ = lock.close().await;
+                return Err(error);
+            }
+        };
 
         let migrated = async {
-            fs::copy(safety_copy, &working).map_err(failure)?;
             Self::open(&working).await?.close().await;
-            Ok(())
+            Ok::<_, RepositoryError>(())
         }
         .await;
         if let Err(error) = migrated {
+            let _ = lock.close().await;
             remove_with_sidecars(&working);
-            return Err(error);
+            return Err(error.into());
         }
 
-        // A stale WAL would replay over the new file. If the rename fails, the
-        // safety copy still holds what that WAL held.
-        remove_sidecars(database);
-        fs::rename(&working, database).map_err(failure)
+        let swapped = if cfg!(windows) {
+            swap_after_release(lock, &working, database, |_| {}).await
+        } else {
+            swap_locked(lock, &working, database).await
+        };
+        if swapped.is_err() {
+            remove_with_sidecars(&working);
+        }
+        swapped
     }
 
     /// The schema version this build of the adapter works with.
@@ -356,6 +428,17 @@ impl SqliteLeads {
         Self::open(database).await
     }
 
+    /// How many leads hold a consent record that cannot be read. Those leads
+    /// load as without consent; the values themselves are never reported.
+    pub async fn unreadable_consents(&self) -> Result<usize, RepositoryError> {
+        let rows = sqlx::query(SELECT_CONSENTS)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(failure)?;
+
+        Ok(rows.iter().filter(|row| read_consent(row).is_err()).count())
+    }
+
     pub async fn close(&self) {
         self.pool.close().await;
     }
@@ -424,6 +507,164 @@ async fn ensure_crm_schema(path: &Path) -> Result<(), RepositoryError> {
     }
 }
 
+/// A connection that holds an exclusive lock on `database` until it closes.
+/// It waits for no one: a busy database is refused at once.
+async fn lock_exclusively(database: &Path) -> Result<SqliteConnection, UpgradeError> {
+    let options = SqliteConnectOptions::new()
+        .filename(database)
+        .locking_mode(SqliteLockingMode::Exclusive)
+        .busy_timeout(Duration::ZERO);
+    let mut connection = SqliteConnection::connect_with(&options).await?;
+
+    // In exclusive locking mode the lock outlives this transaction. In WAL
+    // mode the first read already needs it, because every other open
+    // connection holds a shared lock on the file.
+    let locked = async {
+        let mut transaction = connection.begin_with("BEGIN EXCLUSIVE").await?;
+        sqlx::query("SELECT COUNT(*) FROM sqlite_master")
+            .fetch_one(&mut *transaction)
+            .await?;
+        transaction.commit().await
+    }
+    .await;
+    if let Err(error) = locked {
+        let _ = connection.close().await;
+        return Err(error.into());
+    }
+
+    Ok(connection)
+}
+
+/// A new, empty file beside `database` named `<stem>.<label>-<pid>-<n>.db`.
+/// The name is new, and so are the names SQLite gives its journals, so no
+/// user file is ever overwritten or later deleted.
+fn new_file_beside(database: &Path, label: &str) -> Result<(PathBuf, File), RepositoryError> {
+    for attempt in 0..WORKING_NAME_ATTEMPTS {
+        let path = database.with_extension(format!("{label}-{}-{attempt}.db", process::id()));
+        if sidecars(&path).iter().any(|sidecar| sidecar.exists()) {
+            continue;
+        }
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(failure(error)),
+        }
+    }
+
+    Err(failure("No hay un nombre libre junto a la base"))
+}
+
+/// A copy of `source` in a new file beside `database`.
+fn working_copy(database: &Path, source: &Path) -> Result<PathBuf, RepositoryError> {
+    let (working, mut file) = new_file_beside(database, "migrando")?;
+    let copied = File::open(source)
+        .and_then(|mut source| io::copy(&mut source, &mut file))
+        .and_then(|_| file.sync_all());
+    drop(file);
+
+    match copied {
+        Ok(()) => Ok(working),
+        Err(error) => {
+            let _ = fs::remove_file(&working);
+            Err(failure(error))
+        }
+    }
+}
+
+/// Puts `working` in place of `database` while `lock` still holds the old
+/// file, then releases it. Nothing can write to `database` in between.
+///
+/// A connection that opened the old file and waits on the lock keeps that
+/// file after the rename. The old file leaves WAL mode first, so that
+/// connection would write through a rollback journal, which SQLite refuses on
+/// a moved file (`SQLITE_READONLY_DBMOVED`); in WAL mode it would instead
+/// append to the new file's WAL and corrupt it. Reads still see the old data.
+async fn swap_locked(
+    mut lock: SqliteConnection,
+    working: &Path,
+    database: &Path,
+) -> Result<(), UpgradeError> {
+    let prepared = leave_wal(&mut lock).await;
+    let swapped = match prepared {
+        Ok(()) => fs::rename(working, database).map_err(|error| failure(error).into()),
+        Err(error) => Err(error),
+    };
+    let _ = lock.close().await;
+    swapped
+}
+
+/// Windows cannot rename over a file that a connection has open, so `lock`
+/// must close before the swap. To lose no write made in that gap, the old
+/// file first moves aside, which fails while anyone has it open, and its
+/// bytes must still be the ones seen under the lock. Otherwise it goes back
+/// and the answer is [`UpgradeError::Busy`]. While it is aside, `database`
+/// does not exist for the time of one rename. `between` runs in the gap, so a
+/// test can write there.
+async fn swap_after_release(
+    mut lock: SqliteConnection,
+    working: &Path,
+    database: &Path,
+    between: impl FnOnce(&Path),
+) -> Result<(), UpgradeError> {
+    let seen = match leave_wal(&mut lock).await {
+        Ok(()) => file_digest(database),
+        Err(error) => {
+            let _ = lock.close().await;
+            return Err(error);
+        }
+    };
+    let _ = lock.close().await;
+    let seen = seen?;
+    between(database);
+
+    // The empty placeholder only reserves the name; the rename replaces it.
+    let (aside, placeholder) = new_file_beside(database, "aparte")?;
+    drop(placeholder);
+    if fs::rename(database, &aside).is_err() {
+        let _ = fs::remove_file(&aside);
+        return Err(UpgradeError::Busy);
+    }
+    if file_digest(&aside)? != seen {
+        fs::rename(&aside, database).map_err(|error| aside_failure(error, &aside))?;
+        return Err(UpgradeError::Busy);
+    }
+    if let Err(error) = fs::rename(working, database) {
+        fs::rename(&aside, database).map_err(|error| aside_failure(error, &aside))?;
+        return Err(failure(error).into());
+    }
+    let _ = fs::remove_file(&aside);
+
+    Ok(())
+}
+
+fn aside_failure(error: io::Error, aside: &Path) -> UpgradeError {
+    UpgradeError::Failed(failure(format!(
+        "{error}. Los datos anteriores están en {}",
+        aside.display()
+    )))
+}
+
+/// Moves the locked database out of WAL mode, which first writes its WAL into
+/// the file and deletes it.
+async fn leave_wal(lock: &mut SqliteConnection) -> Result<(), UpgradeError> {
+    let mode: String = sqlx::query_scalar("PRAGMA journal_mode = DELETE")
+        .fetch_one(&mut *lock)
+        .await?;
+    if mode != "delete" {
+        return Err(failure(format!("El modo de diario quedó en {mode}")).into());
+    }
+
+    Ok(())
+}
+
+fn file_digest(path: &Path) -> Result<u64, UpgradeError> {
+    let bytes = fs::read(path).map_err(failure)?;
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+
+    Ok(hasher.finish())
+}
+
 async fn validate_backup(backup: &Path, working: &Path) -> Result<(), RepositoryError> {
     fs::copy(backup, working).map_err(failure)?;
     ensure_crm_schema(working).await?;
@@ -442,11 +683,18 @@ async fn validate_backup(backup: &Path, working: &Path) -> Result<(), Repository
     checked.map(|_| ())
 }
 
-fn remove_sidecars(path: &Path) {
-    for suffix in ["-wal", "-shm"] {
+/// The files SQLite may keep beside `path`.
+fn sidecars(path: &Path) -> [PathBuf; 3] {
+    ["-wal", "-shm", "-journal"].map(|suffix| {
         let mut name = path.as_os_str().to_owned();
         name.push(suffix);
-        let _ = fs::remove_file(name);
+        PathBuf::from(name)
+    })
+}
+
+fn remove_sidecars(path: &Path) {
+    for sidecar in &sidecars(path)[..2] {
+        let _ = fs::remove_file(sidecar);
     }
 }
 
@@ -1093,22 +1341,9 @@ fn to_lead(row: &SqliteRow) -> Result<Lead, RepositoryError> {
     let id: String = row.try_get("id").map_err(failure)?;
     let follow_up_on: String = row.try_get("follow_up_on").map_err(failure)?;
     let renewal_of: Option<String> = row.try_get("renewal_of_case").map_err(failure)?;
-    let consent = match (
-        row.try_get::<Option<bool>, _>("consent_given")
-            .map_err(failure)?,
-        row.try_get::<Option<String>, _>("consent_on")
-            .map_err(failure)?,
-        row.try_get::<Option<String>, _>("consent_source")
-            .map_err(failure)?,
-    ) {
-        (None, None, None) => None,
-        (Some(given), Some(recorded_on), Some(source)) => Some(Consent {
-            given,
-            recorded_on: Date::parse(&recorded_on, &Iso8601::DATE).map_err(failure)?,
-            source,
-        }),
-        _ => return Err(failure("Consentimiento guardado incompleto")),
-    };
+    // A consent that cannot be read loads as none, so it hides no lead and
+    // contact needs a new consent; `unreadable_consents` counts it.
+    let consent = read_consent(row).unwrap_or(None);
 
     Lead::restore(LeadRecord {
         id: Uuid::parse_str(&id).map_err(failure)?,
@@ -1127,6 +1362,29 @@ fn to_lead(row: &SqliteRow) -> Result<Lead, RepositoryError> {
         consent,
     })
     .map_err(failure)
+}
+
+fn read_consent(row: &SqliteRow) -> Result<Option<Consent>, RepositoryError> {
+    let consent = match (
+        row.try_get::<Option<bool>, _>("consent_given")
+            .map_err(failure)?,
+        row.try_get::<Option<String>, _>("consent_on")
+            .map_err(failure)?,
+        row.try_get::<Option<String>, _>("consent_source")
+            .map_err(failure)?,
+    ) {
+        (None, None, None) => None,
+        (Some(given), Some(recorded_on), Some(source)) if !source.trim().is_empty() => {
+            Some(Consent {
+                given,
+                recorded_on: Date::parse(&recorded_on, &Iso8601::DATE).map_err(failure)?,
+                source,
+            })
+        }
+        _ => return Err(failure("Consentimiento guardado incompleto")),
+    };
+
+    Ok(consent)
 }
 
 fn to_case(row: &SqliteRow) -> Result<Case, RepositoryError> {
@@ -1233,4 +1491,90 @@ fn to_quote(
 
 fn failure(error: impl ToString) -> RepositoryError {
     RepositoryError(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    //! The swap Windows needs, run here so every platform proves it.
+
+    use std::{env, process::Command};
+
+    use super::*;
+
+    struct Folder(PathBuf);
+
+    impl Folder {
+        fn new() -> Self {
+            let path = env::temp_dir().join(format!("cominorsa-swap-{}", Uuid::now_v7()));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn names(&self) -> Vec<String> {
+            let mut names: Vec<String> = fs::read_dir(&self.0)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        }
+    }
+
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn sqlite(database: &Path, sql: &str) -> String {
+        let output = Command::new("sqlite3")
+            .arg(database)
+            .arg(sql)
+            .output()
+            .expect("the gate requires sqlite3");
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    async fn databases(folder: &Folder) -> (PathBuf, PathBuf) {
+        let database = folder.0.join("crm.db");
+        let working = folder.0.join("crm.nueva.db");
+        for (path, table) in [(&database, "vieja"), (&working, "nueva")] {
+            SqliteLeads::open(path).await.unwrap().close().await;
+            sqlite(path, &format!("CREATE TABLE {table} (x);"));
+        }
+        (database, working)
+    }
+
+    #[tokio::test]
+    async fn the_swap_after_release_puts_the_new_file_in_place() {
+        let folder = Folder::new();
+        let (database, working) = databases(&folder).await;
+        let lock = lock_exclusively(&database).await.unwrap();
+
+        swap_after_release(lock, &working, &database, |_| {})
+            .await
+            .unwrap();
+
+        assert!(sqlite(&database, ".tables").contains("nueva"));
+        assert!(!sqlite(&database, ".tables").contains("vieja"));
+        assert_eq!(folder.names(), ["crm.db"]);
+    }
+
+    #[tokio::test]
+    async fn a_write_in_the_gap_puts_the_old_file_back_and_is_busy() {
+        let folder = Folder::new();
+        let (database, working) = databases(&folder).await;
+        let lock = lock_exclusively(&database).await.unwrap();
+
+        let swapped = swap_after_release(lock, &working, &database, |path| {
+            sqlite(path, "CREATE TABLE escrita_en_el_hueco (x);");
+        })
+        .await;
+
+        assert!(matches!(swapped, Err(UpgradeError::Busy)), "{swapped:?}");
+        let tables = sqlite(&database, ".tables");
+        assert!(tables.contains("vieja") && tables.contains("escrita_en_el_hueco"));
+        assert_eq!(folder.names(), ["crm.db", "crm.nueva.db"]);
+    }
 }

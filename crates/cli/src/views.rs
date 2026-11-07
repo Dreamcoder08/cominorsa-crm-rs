@@ -236,6 +236,7 @@ pub fn status(status: &Status) -> Value {
             "prospects": status.prospects,
             "team_members": status.team_members,
         },
+        "unreadable_rows": {"lead_consents": status.unreadable_consents},
     })
 }
 
@@ -254,6 +255,7 @@ pub fn snapshot(state: &Snapshot) -> Value {
         "quote_counters": counters,
         "prospects": state.prospects.iter().map(prospect).collect::<Vec<_>>(),
         "settings": settings(&state.settings),
+        "unreadable_rows": {"lead_consents": state.unreadable_consents},
     })
 }
 

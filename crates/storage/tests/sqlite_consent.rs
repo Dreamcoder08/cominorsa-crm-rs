@@ -163,19 +163,49 @@ async fn origin_and_consent_survive_a_reopen_and_a_revocation() {
 }
 
 #[tokio::test]
-async fn refuses_a_lead_with_an_incomplete_consent_record() {
+async fn an_unreadable_consent_record_loads_as_no_consent_and_is_counted() {
     let database = TempDatabase::new();
     let store = SqliteLeads::open(&database.path()).await.unwrap();
-    store.save(&received(LeadOrigin::WebForm)).await.unwrap();
+    let mut healthy = received(LeadOrigin::Referral);
+    healthy
+        .record_consent(date!(2026 - 11 - 08), "Aceptó por correo")
+        .unwrap();
+    store.save(&healthy).await.unwrap();
+    let corruptions = [
+        "UPDATE leads SET consent_on = NULL WHERE id = ?1",
+        "UPDATE leads SET consent_on = 'no es fecha' WHERE id = ?1",
+        "UPDATE leads SET consent_source = '  ' WHERE id = ?1",
+        "UPDATE leads SET consent_given = 'quizá' WHERE id = ?1",
+    ];
+    let mut broken = Vec::new();
+    for _ in corruptions {
+        let lead = received(LeadOrigin::WebForm);
+        store.save(&lead).await.unwrap();
+        broken.push(lead);
+    }
+    assert_eq!(store.unreadable_consents().await.unwrap(), 0);
     store.close().await;
     let raw = raw_pool(&database.path()).await;
-    sqlx::query("UPDATE leads SET consent_on = NULL")
-        .execute(&raw)
-        .await
-        .unwrap();
+    for (lead, corruption) in broken.iter().zip(corruptions) {
+        sqlx::query(corruption)
+            .bind(lead.id().to_string())
+            .execute(&raw)
+            .await
+            .unwrap();
+    }
     raw.close().await;
 
     let reopened = SqliteLeads::open(&database.path()).await.unwrap();
-    assert!(reopened.list().await.is_err());
+    let leads = reopened.list().await.unwrap();
+    let unreadable = reopened.unreadable_consents().await.unwrap();
     reopened.close().await;
+
+    assert_eq!(leads.len(), 1 + corruptions.len());
+    let found = |id| leads.iter().find(|lead| lead.id() == id).unwrap();
+    assert_eq!(found(healthy.id()), &healthy);
+    for lead in &broken {
+        assert_eq!(found(lead.id()).consent(), None);
+        assert_eq!(found(lead.id()).name(), lead.name());
+    }
+    assert_eq!(unreadable, corruptions.len());
 }

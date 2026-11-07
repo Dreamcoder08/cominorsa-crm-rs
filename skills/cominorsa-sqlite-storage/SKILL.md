@@ -4,7 +4,7 @@ description: "Trigger: database, migration, SQLite, sqlx, schema, query, backup,
 license: Apache-2.0
 metadata:
   author: "dreamcoder08"
-  version: "1.0"
+  version: "1.1"
 ---
 
 ## Activation Contract
@@ -16,7 +16,10 @@ Load for any change in `crates/storage`, its migrations, or the database file lo
 - Migrations are append-only: never edit or delete a committed file in `crates/storage/migrations`.
 - Every migration is high risk (stored customer data): it gets its own commit and a test that opens a database at the previous schema with synthetic rows and checks they survive.
 - Bind parameters for every value; never build SQL with `format!`.
-- Keep WAL mode and a single writer connection unless a measured need says otherwise.
+- Only `init` and `migrate` set WAL mode (through `SqliteLeads::open`); every other open keeps the journal mode it finds, because changing it rewrites the file header, so a rejected write would still change the file. Keep a single writer connection unless a measured need says otherwise.
+- An upgrade holds an exclusive lock (`locking_mode = EXCLUSIVE`, no busy wait) from the safety copy to the swap and refuses a busy database; leave WAL on the old file before renaming over it, so a waiting connection gets `SQLITE_READONLY_DBMOVED` instead of writing into the new file's WAL.
+- Working copies beside the database use a new name created with `create_new`; never remove a fixed name that a user file could hold.
+- Rehydration tolerates one unreadable optional value per row, as with `last_backup_at` and consent, and counts it for `status`; it never echoes the value.
 - `crates/storage` maps rows to domain types and back; no business rules here.
 - Tests use a temporary file or `:memory:`, never the user's real `crm.db`.
 - Install sqlx-cli without `--locked` (the 0.9 release ships no lockfile).

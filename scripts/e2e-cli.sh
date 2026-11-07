@@ -664,12 +664,18 @@ status=0
 "$importer" --db imported.db --sunat none.csv >importer.out 2>importer.err || status=$?
 expect "invalid tax file on a current database" 1 "$status"
 expect "file hash after an invalid tax file" "$imported_hash" "$(file_hash imported.db)"
+status=0
+"$binary" --db imported.db --json --today "$day" lead advance "$no_id" >imported.out 2>imported.err || status=$?
+expect "a rejected write on a rollback-journal database" 1 "$status"
+expect "file hash after a rejected write in rollback-journal mode" "$imported_hash" "$(file_hash imported.db)"
+expect "a rejected write keeps the rollback journal" delete "$(sqlite3 imported.db 'PRAGMA journal_mode')"
 sed 's/Empresa Importada SAC/Persona Importada/' import-companies.csv >import-people.csv
 imported="$("$importer" --db imported.db import-companies.csv import-people.csv)"
 expect "the importer reports what it added" "Prospectos nuevos: 2" "$(sed -n 1p <<<"$imported")"
 expect "the importer reports the total" "Prospectos totales: 2" "$(sed -n 2p <<<"$imported")"
 [[ -f "$(sed -n 3p <<<"$imported" | sed 's/^Copia previa: //')" ]] || fail "the importer lost its copy"
 expect "the import reached the database" 2 "$("$binary" --db imported.db --json prospect count | jq '.data.total')"
+expect "a write keeps the rollback journal" delete "$(sqlite3 imported.db 'PRAGMA journal_mode')"
 enriched="$("$importer" --db imported.db --sunat import-tax.csv)"
 expect "the importer reports what it enriched" "Empresas actualizadas: 1" "$(sed -n 1p <<<"$enriched")"
 cp old.db blocked.db
@@ -685,10 +691,60 @@ blocked_copy="$(compgen -G 'blocked.antes-de-migrar-*.db')" || fail "a failed mi
 expect "the copy holds the old schema" 7 "$(sqlite3 "$blocked_copy" 'SELECT MAX(version) FROM _sqlx_migrations')"
 [[ "$(jq -r '.error.message' blocked.err)" == *"$blocked_copy"* ]] ||
     fail "the error must name the copy: $(cat blocked.err)"
-[[ -z "$(compgen -G 'blocked.migrating*')" ]] || fail "a failed migration left its working copy"
+[[ -z "$(compgen -G 'blocked.migrando-*')" ]] || fail "a failed migration left its working copy"
+
+echo "== migrate refuses while another program has the database open"
+cp old.db busy.db
+sqlite3 busy.db "PRAGMA journal_mode = WAL;" >/dev/null
+mkfifo busy.fifo
+sqlite3 busy.db <busy.fifo >busy.holder 2>&1 &
+holder=$!
+exec 3>busy.fifo
+echo "SELECT 'abierta' FROM sqlite_master LIMIT 1;" >&3
+for _ in $(seq 100); do
+    grep -q abierta busy.holder && break
+    sleep 0.05
+done
+grep -q abierta busy.holder || fail "the other program never opened the database"
+busy_hash="$(file_hash busy.db)"
+: >busy.out; : >busy.err
+busy_files="$(ls)"
+status=0
+"$binary" --db busy.db --json --today "$day" migrate >busy.out 2>busy.err || status=$?
+expect "exit of migrate while the database is open" 3 "$status"
+expect "stdout of migrate while the database is open" "" "$(cat busy.out)"
+expect "code of migrate while the database is open" database_busy "$(jq -r '.error.code' busy.err)"
+expect "file hash after a busy migrate" "$busy_hash" "$(file_hash busy.db)"
+expect "files after a busy migrate" "$busy_files" "$(ls)"
+echo "INSERT INTO leads (id, name, phone, service, stage, follow_up_on)
+    VALUES ('44444444-4444-7444-8444-444444444444', 'Escrito por otro', '987650009', 'DAC',
+    'initial_contact', '2026-03-05');" >&3
+exec 3>&-
+wait "$holder"
+expect "migrate after the other program closed" true "$("$binary" --db busy.db --json migrate | jq '.data.changed')"
+expect "the other program's write survives" 1 \
+    "$("$binary" --db busy.db --json export | jq '[.data.leads[] | select(.name == "Escrito por otro")] | length')"
+
+echo "== one corrupt consent row hides no lead"
+cp "$root/first/crm.db" corrupt.db
+sqlite3 corrupt.db "UPDATE leads SET consent_given = 1, consent_on = 'fecha-rota',
+    consent_source = 'x' WHERE rowid = (SELECT MIN(rowid) FROM leads);" >/dev/null
+stored_leads="$(sqlite3 corrupt.db 'SELECT COUNT(*) FROM leads')"
+corrupt_status="$("$binary" --db corrupt.db --json status)"
+expect "status counts the unreadable consent" 1 "$(jq '.data.unreadable_rows.lead_consents' <<<"$corrupt_status")"
+expect "status still counts every lead" "$stored_leads" "$(jq '.data.counts.leads' <<<"$corrupt_status")"
+corrupt_list="$("$binary" --db corrupt.db --json --today "$day" lead list)"
+expect "every lead is listed" "$stored_leads" "$(jq '.data.leads | length' <<<"$corrupt_list")"
+expect "export counts the unreadable consent" 1 \
+    "$("$binary" --db corrupt.db --json export | jq '.data.unreadable_rows.lead_consents')"
+[[ "$corrupt_status$corrupt_list" != *fecha-rota* ]] || fail "an unreadable value was echoed"
 
 echo "== only migrate upgrades"
+echo "archivo del usuario" >old.migrating.db
 migration="$("$binary" --db old.db --json --today "$day" migrate | jq -c '.data')"
+expect "a user file with the old working name survives" "archivo del usuario" "$(cat old.migrating.db)"
+[[ -z "$(compgen -G 'old.migrando-*')" ]] || fail "migrate left its working copy"
+expect "migrate sets WAL" wal "$(sqlite3 old.db 'PRAGMA journal_mode')"
 expect "migrate changed" true "$(jq '.changed' <<<"$migration")"
 expect "migrate from" 7 "$(jq '.from' <<<"$migration")"
 expect "migrate to" 9 "$(jq '.to' <<<"$migration")"
