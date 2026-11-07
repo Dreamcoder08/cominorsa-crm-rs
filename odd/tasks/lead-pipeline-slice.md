@@ -21,6 +21,7 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - S14. The sidebar and layout are responsive. User: "tambien debe ser responsive".
 - S15. Add features that satisfy the client, inspired by global and regional leaders. User: "mas funcionalidades que le falta al proyecto para que el cliente este satisfecho". Assumption: delivered incrementally, starting with the agenda, team list, and manual backup; WhatsApp stays out until authorized.
 - S16. Add a WhatsApp button that opens the chat with a prepared message; a person reviews and sends it. Without API. The user authorized it: "yes te autorizo". The prepared message is editable in Settings.
+- S17. Show the app icon. User: "me gustaria que se muestre el icon de la app actualmente no sale si necesitas crear imagen o algo usa a codex cli". Assumption: the mark is the existing COMINORSA logo, redrawn in high resolution, not a new design.
 
 ## Tasks
 
@@ -32,6 +33,7 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - [x] T6. S13, S15: settings persistence with theme, team, follow-up days, and manual backup. Route: inline. Risk: item 1. Commit: f2cab15.
 - [x] T7. S12-S15: design system, responsive shell, settings view, and agenda. Route: inline. Commit: e49e7b2.
 - [x] T8. S16: WhatsApp chat link with an editable message template. Route: inline. Commit: 2550d2a.
+- [x] T9. S17: icon in window, sidebar, Windows executable, and Linux launcher. Route: inline. Commit: 67087e5.
 
 ## Log
 
@@ -58,3 +60,4 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - L19 (2026-11-06): Verifier passed S11 with no blockers. Advisories kept: backups hold the post-migration schema, reruns leave extra backups, conversion does not mark the prospect, and a failed startup may leave Prospects loading.
 - L20 (2026-11-06): Real-window captures confirmed light theme, dark theme, and the icon rail. Bottom navigation, settings clicks, and agenda were not exercised in the live window. Native review of commits after 4728027 is pending.
 - L21 (2026-11-06, user answer, verbatim): "yes te autorizo". Authorized scope: open `wa.me` in the external browser or app with prepared text. No credential, API, or automatic send.
+- L22 (2026-11-06, user requests, verbatim): "me gustaria que se muestre el icon de la app actualmente no sale si necesitas crear imagen o algo usa a codex cli" and "usa hc de herdr para abrir codex cli si es necesario". The icon was redrawn by Codex CLI from the existing logo, before the second message arrived.
