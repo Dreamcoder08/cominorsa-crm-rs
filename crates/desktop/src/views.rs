@@ -11,6 +11,7 @@ use crate::{
 
 const SERVICES: [&str; 5] = ["REINFO", "IGAFOM", "DAC", "ESTAMIN", "Plan de minado"];
 
+const BRAND_MARK: &str = include_str!("../assets/brand-mark.uri");
 const ICON_PIPELINE: &str = "M4 4h4v16H4zM10 4h4v10h-4zM16 4h4v13h-4z";
 const ICON_AGENDA: &str = "M4 6h16v14H4zM4 10h16M8 3v5M16 3v5";
 const ICON_PROSPECTS: &str = "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM21 21l-5-5";
@@ -35,7 +36,7 @@ pub fn Shell(
         div { class: "shell",
             aside { class: "sidebar",
                 div { class: "brand",
-                    span { class: "brand-mark", "C" }
+                    img { class: "brand-mark", src: BRAND_MARK, alt: "COMINORSA" }
                     span { class: "brand-name", "COMINORSA" }
                 }
                 nav { class: "nav", aria_label: "Secciones",

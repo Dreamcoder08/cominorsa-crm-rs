@@ -10,7 +10,10 @@ use cominorsa_domain::{
     Lead, LeadRepository, NewLead, Prospect, ProspectRepository, Settings, SettingsRepository,
 };
 use cominorsa_storage::SqliteLeads;
-use dioxus::prelude::*;
+use dioxus::{
+    desktop::{icon_from_memory, tao::window::Icon},
+    prelude::*,
+};
 use directories::ProjectDirs;
 use time::{Date, OffsetDateTime, format_description::well_known::Iso8601, macros::offset};
 use uuid::Uuid;
@@ -23,6 +26,7 @@ pub use settings_view::SettingsView;
 pub use views::{Agenda, LeadForm, Prospects, Section, Shell, Workspace};
 
 const STYLE: &str = include_str!("style.css");
+const ICON: &[u8] = include_bytes!("../assets/icon.png");
 const DATABASE_PATH_VARIABLE: &str = "COMINORSA_DB_PATH";
 const PROSPECT_PAGE_SIZE: u32 = 100;
 const MANUAL_REVIEW_SERVICE: &str = "REVISAR_MANUAL";
@@ -73,6 +77,10 @@ pub fn parse_form(values: FormValues) -> Result<Lead, String> {
         follow_up_on,
     })
     .map_err(|error| error.to_string())
+}
+
+pub fn window_icon() -> Result<Icon, String> {
+    icon_from_memory(ICON).map_err(|error| error.to_string())
 }
 
 /// Peru has a fixed UTC-5 offset and no daylight saving time.

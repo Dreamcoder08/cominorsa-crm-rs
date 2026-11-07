@@ -1,7 +1,7 @@
 use cominorsa_desktop::{
     Agenda, AgendaGroups, FollowUp, FormValues, LeadForm, PipelineSummary, Prospects, Section,
     SettingsView, Shell, Workspace, format_date, matches_query, next_follow_up, parse_form,
-    profile_label,
+    profile_label, window_icon,
 };
 use cominorsa_domain::{Lead, NewLead, Prospect, ProspectKind, Settings, ThemePreference};
 use dioxus::prelude::*;
@@ -429,4 +429,17 @@ fn renders_the_agenda_and_its_empty_state() {
 #[test]
 fn computes_the_default_follow_up_date() {
     assert_eq!(next_follow_up(TODAY, 3), date!(2026 - 11 - 09));
+}
+
+#[test]
+fn shows_the_brand_logo_in_the_sidebar() {
+    let html = render(shell_view);
+
+    assert!(html.contains("data:image/png;base64,"));
+    assert!(html.contains("alt=\"COMINORSA\""));
+}
+
+#[test]
+fn loads_the_embedded_window_icon() {
+    assert!(window_icon().is_ok());
 }

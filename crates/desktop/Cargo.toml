@@ -12,6 +12,9 @@ directories.workspace = true
 time.workspace = true
 uuid.workspace = true
 
+[build-dependencies]
+embed-resource.workspace = true
+
 [dev-dependencies]
 dioxus-ssr.workspace = true
 

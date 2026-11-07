@@ -19,6 +19,16 @@ The `Windows build` workflow runs the tests and publishes `cominorsa-crm-windows
 
 Data lives in `%APPDATA%\COMINORSA\CRM\data\crm.db`.
 
+Cross-compile from Linux with `zig`, `cargo-zigbuild`, and `llvm-windres`:
+
+```sh
+RC=llvm-windres RC_x86_64_pc_windows_gnu=llvm-windres cargo zigbuild --release --locked --target x86_64-pc-windows-gnu -p cominorsa-desktop -p cominorsa-importer
+```
+
+## App icon
+
+`crates/desktop/assets` holds the icon, redrawn from the COMINORSA logo. The window and sidebar embed it, `build.rs` adds `icon.ico` to the Windows executable, and `scripts/install-linux-launcher.sh` adds the Linux launcher.
+
 ## Import prospects
 
 Keep source files outside this repository.

@@ -60,17 +60,7 @@ button, input, textarea { font: inherit; }
 
 .brand { display: flex; gap: 10px; align-items: center; padding: 0 var(--space-2); font-weight: 650; letter-spacing: 0.02em; }
 
-.brand-mark {
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  flex: none;
-  border-radius: var(--radius-s);
-  background: var(--accent);
-  color: var(--on-accent);
-  font-size: 13px;
-}
+.brand-mark { width: 28px; height: 28px; flex: none; border-radius: var(--radius-s); }
 
 .nav { display: grid; gap: 2px; }
 .nav-bottom { margin-top: auto; }
