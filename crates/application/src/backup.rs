@@ -50,6 +50,13 @@ pub async fn run_backup(
     Ok(path)
 }
 
+/// A store back on a restored database, and where the previous data went.
+#[derive(Clone)]
+pub struct Restored {
+    pub store: SqliteLeads,
+    pub safety_copy: PathBuf,
+}
+
 /// Replaces `database` with a validated backup, saving a safety copy beside it,
 /// and returns the reopened store.
 pub async fn restore_backup(
@@ -57,8 +64,10 @@ pub async fn restore_backup(
     database: &Path,
     backup: &Path,
     clock: &Clock,
-) -> Result<SqliteLeads, AppError> {
-    let safety = database.with_extension(format!("antes-de-restaurar-{}.db", clock.file_stamp()));
+) -> Result<Restored, AppError> {
+    let safety_copy =
+        database.with_extension(format!("antes-de-restaurar-{}.db", clock.file_stamp()));
+    let store = store.restore(database, backup, &safety_copy).await?;
 
-    Ok(store.restore(database, backup, &safety).await?)
+    Ok(Restored { store, safety_copy })
 }

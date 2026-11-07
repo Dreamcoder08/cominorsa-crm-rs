@@ -16,7 +16,7 @@ mod quote_pdf;
 mod quotes;
 mod settings;
 
-pub use backup::{create_backup, restore_backup, run_backup};
+pub use backup::{Restored, create_backup, restore_backup, run_backup};
 pub use billing::{
     BillingChange, BillingEdit, MilestoneValues, apply_billing, billing_change, find_milestone,
     parse_milestone_date, save_billing,

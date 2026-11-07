@@ -860,7 +860,7 @@ async fn a_restore_brings_the_backed_up_state_back_and_keeps_a_safety_copy() {
         .await
         .unwrap();
 
-    let leads = restored.list().await.unwrap();
+    let leads = restored.store.list().await.unwrap();
     assert_eq!(leads.len(), 1);
     assert_eq!(leads[0].name(), "Antes");
     assert!(

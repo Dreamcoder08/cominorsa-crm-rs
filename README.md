@@ -25,6 +25,50 @@ Cross-compile from Linux with `zig`, `cargo-zigbuild`, and `llvm-windres`:
 RC=llvm-windres RC_x86_64_pc_windows_gnu=llvm-windres cargo zigbuild --release --locked --target x86_64-pc-windows-gnu -p cominorsa-desktop -p cominorsa-importer
 ```
 
+## CLI
+
+`cominorsa` runs every business flow without a window, through the same application layer as the desktop app, so an agent can test behavior and state from a terminal. It sends no messages: `lead whatsapp` only prints a prepared URL.
+
+```sh
+cargo run -p cominorsa-cli -- --help
+cargo run -p cominorsa-cli -- --db <crm.db> --json status
+scripts/e2e-cli.sh
+```
+
+| Group | Commands |
+|---|---|
+| State | `status`, `export`, `agenda` |
+| `lead` | `add`, `list`, `show`, `summary`, `advance`, `assign`, `whatsapp` |
+| `prospect` | `import`, `enrich`, `search`, `count`, `convert` |
+| `case` | `list`, `show`, `close` |
+| `step` | `done`, `undo`, `date` |
+| `billing` | `total`, `plan`, `add`, `edit`, `pay`, `unpay`, `delete` |
+| `quote` | `create`, `edit`, `list`, `show`, `send`, `accept`, `reject`, `version`, `pdf` |
+| `settings` | `show`, `set` |
+| `backup` | `create`, `restore` |
+
+The database path is mandatory, through `--db` or `COMINORSA_DB_PATH`; the CLI has no default location, so it cannot reach the app's real data by accident. A command that only reads refuses a database that does not exist instead of creating it.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Success |
+| 1 | Business rejection: the data did not change |
+| 2 | Usage error |
+| 3 | Storage failure |
+
+Output is Spanish for people. With `--json`, stdout holds one document on success and stderr holds one on failure, and the other stream stays empty:
+
+```json
+{"data": {"lead": {"id": "...", "stage": "initial_contact"}}}
+{"error": {"code": "final_stage", "message": "El lead ya está en la etapa final"}}
+```
+
+JSON keys and error codes are stable and in English. Dates are ISO 8601, money is integer cents, and enums use their stored codes. Quotes accept their number, such as `COT-2026-0001-V2`, or their id.
+
+For reproducible runs, `--today <AAAA-MM-DD>` fixes the day, `--now <seconds>` fixes the instant, and `--id-seed <text>` derives new ids from the text. A day alone means noon in Peru. Use a different seed per command: repeating a seed for the same lead changes nothing, and reusing it for other data is refused. Without these flags the CLI uses the system clock and the domain's generated ids, like the app. Quote ids are the exception: the domain has no way to inject them yet, so compare quotes by number.
+
+`export` returns `leads`, `cases`, `quotes`, `prospects`, and `settings` in a stable order. `status` returns `counts`.
+
 ## App icon
 
 `crates/desktop/assets` holds the icon, redrawn from the COMINORSA logo. The window and sidebar embed it, `build.rs` adds `icon.ico` to the Windows executable, and `scripts/install-linux-launcher.sh` adds the Linux launcher.
@@ -67,6 +111,7 @@ The file comes from the public reduced RUC roll, which has no phone or email. Ap
 | `crates/storage` | SQLite adapter and migrations | `domain` |
 | `crates/importer` | `cominorsa-import` CLI for prospect CSV files | `domain`, `storage` |
 | `crates/application` | Use cases, display rules, and the quote PDF, free of UI types | `domain`, `storage` |
+| `crates/cli` | `cominorsa` CLI: argument parsing and JSON shapes | `application`, `domain`, `importer`, `storage` |
 | `crates/desktop` | Dioxus desktop UI and startup | `application`, `domain`, `storage` |
 
 Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adapter can reuse `domain` and replace SQLite behind `LeadRepository` and `CaseRepository`. Only backup, restore, and the desktop's startup name `SqliteLeads` directly.
@@ -82,6 +127,7 @@ Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adap
 | Quotes | Not tax documents. The 18% IGV default, the 15-day suggested validity, and whole-number quantities are unvalidated assumptions; marking a quote sent does not move the lead's stage |
 | Billing | Tracks collections only; it does not issue tax invoices or receipts. The 30 / 40 / 30 split comes from an unvalidated example |
 | Renewals | Only DAC suggests a renewal, 12 months after closing, pending client validation; a service naming DAC with others renews as a whole. A closed case with unpaid milestones stays listed until they are paid |
+| CLI state | `status` reports `schema_version` and `integrity_check` as `null`, and `export` leaves out closed cases with nothing to collect and the yearly quote counters: the storage adapter exposes neither yet. Those cases also answer `case_not_active` to `case show` and to a repeated `case close`. A read on a database with an older schema migrates it first, as opening the app does |
 | Follow-up alerts | Visible only while the app is open |
 | Leads from the website or WhatsApp | Registered manually; there is no automatic intake |
 | Prospects | Concession titleholders without phone, RUC, or email; potential service is inferred, not verified |

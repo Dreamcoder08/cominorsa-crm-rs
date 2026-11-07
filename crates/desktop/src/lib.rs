@@ -63,6 +63,7 @@ async fn restore_copy(store: SqliteLeads, backup: PathBuf) -> Result<SqliteLeads
 
     restore_backup(store, &database, &backup, &Clock::system())
         .await
+        .map(|restored| restored.store)
         .map_err(|error| error.to_string())
 }
 
