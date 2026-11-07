@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{ArgGroup, Args, Parser, Subcommand};
 use cominorsa_application::QuoteLineValues;
 use time::{Date, format_description::well_known::Iso8601};
 use uuid::Uuid;
@@ -226,14 +226,15 @@ pub enum BillingCommand {
         #[arg(long, value_name = "AAAA-MM-DD")]
         due: String,
     },
-    /// Cambia un hito: todos los datos o ninguno
+    /// Cambia un hito: guarda todos los datos indicados o ninguno
+    #[command(group(ArgGroup::new("fields").required(true).multiple(true)))]
     Edit {
         id: Uuid,
-        #[arg(long)]
+        #[arg(long, group = "fields")]
         title: Option<String>,
-        #[arg(long, value_name = "SOLES")]
+        #[arg(long, value_name = "SOLES", group = "fields")]
         amount: Option<String>,
-        #[arg(long, value_name = "AAAA-MM-DD")]
+        #[arg(long, value_name = "AAAA-MM-DD", group = "fields")]
         due: Option<String>,
     },
     /// Marca un hito como pagado hoy
@@ -285,6 +286,9 @@ pub enum QuoteCommand {
         quote: String,
         #[arg(long, value_name = "RUTA")]
         out: PathBuf,
+        /// Reemplaza un archivo existente. La base de datos nunca se reemplaza
+        #[arg(long)]
+        force: bool,
     },
 }
 

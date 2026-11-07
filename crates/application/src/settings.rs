@@ -71,6 +71,12 @@ impl SettingsChange {
             settings.add_member(name)?;
         }
         for name in &self.remove_members {
+            if !settings.team().contains(name) {
+                return Err(AppError::rejected(
+                    "member_not_found",
+                    format!("{name} no está en el equipo"),
+                ));
+            }
             settings.remove_member(name);
         }
 

@@ -4,7 +4,7 @@ use std::{
 };
 
 use cominorsa_application::{
-    AppError, BillingEdit, Clock, Context, ErrorKind, FormValues, Ids, MilestoneValues,
+    AppError, BillingEdit, Clock, Context, ErrorKind, FormValues, Ids, MilestoneValues, PdfTarget,
     ProspectConversion, QuoteEdit, QuoteLineValues, QuoteValues, SettingsChange, add_lead,
     advance_lead, agenda, apply_billing, assign_lead, close_case, convert_prospect, create_backup,
     find_case, find_quote, find_stored_case, migrate_database, open_for_reading, reschedule_step,
@@ -309,6 +309,12 @@ async fn assigning_persists_the_responsible_person() {
         .await
         .unwrap()
         .lead;
+
+    let team = SettingsChange {
+        add_members: vec!["Ana".to_owned()],
+        ..SettingsChange::default()
+    };
+    update_settings(&store, team).await.unwrap();
 
     assign_lead(&store, lead.id(), "Ana").await.unwrap();
 
@@ -761,9 +767,12 @@ async fn a_saved_quote_pdf_lands_at_the_chosen_path() {
     .unwrap()
     .quote;
 
-    let path = save_quote_pdf(&store, &quote, &scratch.path().join("cotizacion"))
-        .await
-        .unwrap();
+    let target = PdfTarget {
+        path: &scratch.path().join("cotizacion"),
+        database: &scratch.database(),
+        overwrite: false,
+    };
+    let path = save_quote_pdf(&store, &quote, target).await.unwrap();
 
     assert_eq!(path.extension().unwrap(), "pdf");
     assert!(fs::read(path).unwrap().starts_with(b"%PDF-"));

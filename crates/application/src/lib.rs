@@ -46,8 +46,8 @@ pub use presentation::{
 pub use prospects::{PROSPECT_PAGE_SIZE, ProspectConversion, convert_prospect};
 pub use quote_pdf::{quote_pdf, write_pdf};
 pub use quotes::{
-    QuoteChange, QuoteEdit, QuoteLineValues, QuoteValues, SavedQuote, find_quote, lead_quotes,
-    quote_change, quote_notice, quote_preview, save_quote, save_quote_edit, save_quote_pdf,
-    send_quote,
+    PdfTarget, QuoteChange, QuoteEdit, QuoteLineValues, QuoteValues, SavedQuote, find_quote,
+    lead_quotes, quote_change, quote_notice, quote_preview, save_quote, save_quote_edit,
+    save_quote_pdf, send_quote,
 };
 pub use settings::{SettingsChange, update_settings};

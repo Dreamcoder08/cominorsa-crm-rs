@@ -1,6 +1,6 @@
 //! Turning a prospect into a lead.
 
-use cominorsa_domain::{LeadRepository, ProspectKind, ProspectRepository};
+use cominorsa_domain::{LeadRepository, ProspectKind, ProspectRepository, SettingsRepository};
 
 use crate::{
     context::Context,
@@ -28,7 +28,7 @@ pub async fn convert_prospect<R>(
     context: &mut Context,
 ) -> Result<NewLeadOutcome, AppError>
 where
-    R: LeadRepository + ProspectRepository,
+    R: LeadRepository + ProspectRepository + SettingsRepository,
 {
     let found = repository.search(&conversion.name, u32::MAX).await?;
     let mut matches = found.iter().filter(|prospect| {

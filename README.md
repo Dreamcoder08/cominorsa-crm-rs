@@ -80,6 +80,8 @@ JSON keys and error codes are stable and in English. Dates are ISO 8601, money i
 
 For reproducible runs, `--today <AAAA-MM-DD>` fixes the day, `--now <seconds>` fixes the instant, and `--id-seed <text>` derives new ids from the text. A day alone means noon in Peru. A seed names one request, so use a different one per command. Repeating the identical request with its seed changes nothing in `lead add`, `prospect convert`, `quote create`, `quote version`, `billing add`, and `case close`. When a seed derives an id that already belongs to another record of that kind, the command fails with `id_seed_reused` and nothing changes. Without these flags the CLI uses the system clock and the domain's generated ids, like the app. Two runs of the same commands with the same flags give byte-identical exports, as long as stored paths such as the backup folder match.
 
+`quote pdf --out` refuses an existing file unless `--force` is given, and always refuses the database and its `-wal`, `-shm`, and `-journal` files. `settings set --remove-member` refuses a name that is not on the team, and `billing edit` needs at least one field. Only a team member can own a lead: `lead add`, `lead assign`, and `prospect convert` refuse any other name, and a blank `--owner` clears it.
+
 `export` returns `schema_version`, `leads`, `cases`, `quotes`, `quote_counters`, `prospects`, and `settings` in a stable order, including closed cases with nothing left to collect. `status` returns `schema_version`, `integrity_check`, and `counts`.
 
 ## App icon

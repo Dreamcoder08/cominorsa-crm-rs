@@ -386,6 +386,21 @@ seeded version quote version "$primera" >/dev/null
 refused 1 id_seed_reused --id-seed version quote version "$segunda"
 db=crm.db
 
+echo "== an explicit option takes effect or fails"
+db=seeds.db
+refused 1 member_not_found settings set --remove-member "Nadie Existe"
+refused 1 owner_not_in_team lead assign "$dos" --owner Fantasma
+expect "assigning a member" "Ana Prueba" "$(cli lead assign "$dos" --owner "Ana Prueba" | jq -r '.lead.owner')"
+expect "clearing the owner" null "$(cli lead assign "$dos" --owner "" | jq -c '.lead.owner')"
+refused 2 usage billing edit "$no_id"
+echo "existing" >victim.csv
+refused 1 pdf_target_exists quote pdf "$primera" --out victim.csv
+expect "a refused PDF keeps the file" existing "$(cat victim.csv)"
+refused 1 pdf_target_is_database quote pdf "$primera" --out seeds.db --force
+"$binary" --db "$db" --json quote pdf "$primera" --out victim.csv --force >/dev/null
+expect "force writes the PDF" "%PDF" "$(head -c 4 victim.csv)"
+db=crm.db
+
 echo "== an older schema is reported, never migrated by a read"
 cp "$root/first/crm.db" old.db
 sqlite3 old.db "PRAGMA journal_mode = DELETE;

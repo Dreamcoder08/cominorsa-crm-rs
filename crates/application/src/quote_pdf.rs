@@ -475,12 +475,17 @@ pub fn quote_pdf(quote: &Quote, company: &CompanyProfile) -> Result<Vec<u8>, Str
 
 /// Writes the document where the person chose. Some file dialogs return the
 /// name without its extension.
-pub fn write_pdf(path: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
-    let path = if path.extension().is_some() {
+/// The file a save to `path` writes: without an extension, it gets `.pdf`.
+pub(crate) fn pdf_path(path: &Path) -> PathBuf {
+    if path.extension().is_some() {
         path.to_path_buf()
     } else {
         path.with_extension("pdf")
-    };
+    }
+}
+
+pub fn write_pdf(path: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
+    let path = pdf_path(path);
 
     fs::write(&path, bytes).map_err(|error| format!("No se pudo guardar el PDF: {error}"))?;
     Ok(path)

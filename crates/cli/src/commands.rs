@@ -7,13 +7,13 @@ use std::{
 
 use cominorsa_application::{
     AppError, BillingChange, BillingEdit, Clock, Context, FormValues, Ids, MilestoneValues,
-    PipelineSummary, ProspectConversion, QuoteEdit, QuoteLineValues, QuoteValues, SettingsChange,
-    add_lead, advance_lead, agenda, apply_billing, assign_lead, billing_change, close_case,
-    close_warning, closing_notice, convert_prospect, create_database, find_case, find_lead,
-    find_milestone, find_quote, find_stored_case, lead_quotes, matches_query, migrate_database,
-    milestone_gap_warning, next_follow_up, open_for_reading, open_for_writing, reschedule_step,
-    restore_backup, run_backup, save_billing, save_quote_edit, save_quote_pdf, send_quote,
-    set_step_done, snapshot, status, suggested_total_note, update_settings,
+    PdfTarget, PipelineSummary, ProspectConversion, QuoteEdit, QuoteLineValues, QuoteValues,
+    SettingsChange, add_lead, advance_lead, agenda, apply_billing, assign_lead, billing_change,
+    close_case, close_warning, closing_notice, convert_prospect, create_database, find_case,
+    find_lead, find_milestone, find_quote, find_stored_case, lead_quotes, matches_query,
+    migrate_database, milestone_gap_warning, next_follow_up, open_for_reading, open_for_writing,
+    reschedule_step, restore_backup, run_backup, save_billing, save_quote_edit, save_quote_pdf,
+    send_quote, set_step_done, snapshot, status, suggested_total_note, update_settings,
 };
 use cominorsa_domain::{
     BillingMilestone, BillingSummary, CaseFile, CaseRepository, LeadRepository, ProspectKind,
@@ -726,9 +726,14 @@ async fn quote(
                     .await?;
             saved_quote(&saved.quote, saved.notice)
         }
-        QuoteCommand::Pdf { quote, out } => {
+        QuoteCommand::Pdf { quote, out, force } => {
             let quote = find_quote(&store, &quote).await?;
-            let saved = save_quote_pdf(&store, &quote, &out).await?;
+            let target = PdfTarget {
+                path: &out,
+                database: path,
+                overwrite: force,
+            };
+            let saved = save_quote_pdf(&store, &quote, target).await?;
             let path = saved.display().to_string();
             Reply::new(json!({"path": path}), format!("PDF guardado en {path}"))
         }

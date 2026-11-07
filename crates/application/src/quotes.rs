@@ -1,6 +1,10 @@
 //! The quote form and its changes, validated through the domain.
 
-use std::path::{Path, PathBuf};
+use std::{
+    ffi::OsString,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use cominorsa_domain::{
     CaseRepository, DomainError, IgvRate, Lead, Quote, QuoteContent, QuoteDraft, QuoteLine,
@@ -13,7 +17,7 @@ use crate::{
     context::{Context, Ids},
     error::AppError,
     presentation::{accepted_notice, money_input},
-    quote_pdf::{quote_pdf, write_pdf},
+    quote_pdf::{pdf_path, quote_pdf, write_pdf},
 };
 
 /// An editable suggestion for a new quote, pending client validation.
@@ -353,17 +357,68 @@ pub async fn find_quote<R: QuoteRepository>(
         })
 }
 
-/// Renders the document with the company it must show and writes it to `path`.
+/// Where a quote PDF goes. `database` is never replaced; another existing file
+/// is replaced only with `overwrite`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PdfTarget<'a> {
+    pub path: &'a Path,
+    pub database: &'a Path,
+    pub overwrite: bool,
+}
+
+/// The real location of a path, which may not exist yet.
+fn resolved(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+
+        match (fs::canonicalize(parent), path.file_name()) {
+            (Ok(folder), Some(name)) => folder.join(name),
+            _ => path.to_path_buf(),
+        }
+    })
+}
+
+fn is_database_file(path: &Path, database: &Path) -> bool {
+    let wanted = resolved(path);
+
+    ["", "-wal", "-shm", "-journal"].iter().any(|suffix| {
+        let mut name = OsString::from(database);
+        name.push(suffix);
+        wanted == resolved(Path::new(&name))
+    })
+}
+
+/// Renders the document with the company it must show and writes it.
 pub async fn save_quote_pdf<R: SettingsRepository>(
     repository: &R,
     quote: &Quote,
-    path: &Path,
+    target: PdfTarget<'_>,
 ) -> Result<PathBuf, AppError> {
+    let path = pdf_path(target.path);
+    if is_database_file(&path, target.database) {
+        return Err(AppError::rejected(
+            "pdf_target_is_database",
+            "El PDF no puede reemplazar la base de datos",
+        ));
+    }
+    if path.exists() && !target.overwrite {
+        return Err(AppError::rejected(
+            "pdf_target_exists",
+            format!(
+                "Ya existe {}. Usa --force para reemplazarlo",
+                path.display()
+            ),
+        ));
+    }
+
     let settings = repository.load().await?;
     let bytes = quote_pdf(quote, quote.document_company(settings.company()))
         .map_err(|message| AppError::rejected("pdf_failed", message))?;
 
-    write_pdf(path, &bytes).map_err(|message| AppError::storage("pdf_write_failed", message))
+    write_pdf(&path, &bytes).map_err(|message| AppError::storage("pdf_write_failed", message))
 }
 
 /// The quotes of one lead, newest number first.

@@ -1,8 +1,8 @@
 //! Registering leads and moving them through the pipeline.
 
 use cominorsa_domain::{
-    CaseFile, CaseRepository, Lead, LeadRepository, NewLead, Prospect, QuoteRepository, Stage,
-    procedure_template,
+    CaseFile, CaseRepository, Lead, LeadRepository, NewLead, Prospect, QuoteRepository,
+    SettingsRepository, Stage, procedure_template,
 };
 use time::{Date, format_description::well_known::Iso8601};
 use uuid::Uuid;
@@ -87,14 +87,38 @@ fn same_request(stored: &Lead, requested: &Lead) -> bool {
         && stored.follow_up_on() == requested.follow_up_on()
 }
 
+/// Only someone on the team can be responsible for a lead. A lead may have no
+/// one responsible.
+async fn require_team_owner<R: SettingsRepository>(
+    repository: &R,
+    owner: Option<&str>,
+) -> Result<(), AppError> {
+    let Some(owner) = owner else {
+        return Ok(());
+    };
+    let settings = repository.load().await?;
+
+    if settings.team().iter().any(|member| member == owner) {
+        Ok(())
+    } else {
+        Err(AppError::rejected(
+            "owner_not_in_team",
+            format!("{owner} no está en el equipo"),
+        ))
+    }
+}
+
 /// Saves a new lead. A seeded id can repeat, so a repeat of the same request
 /// changes nothing, and the same seed with other data is refused rather than
 /// overwriting the stored lead.
-pub async fn add_lead<R: LeadRepository>(
+pub async fn add_lead<R>(
     repository: &R,
     values: FormValues,
     context: &mut Context,
-) -> Result<NewLeadOutcome, AppError> {
+) -> Result<NewLeadOutcome, AppError>
+where
+    R: LeadRepository + SettingsRepository,
+{
     let lead = context.ids.lead(parse_form(values)?)?;
 
     if context.ids.is_seeded() {
@@ -113,6 +137,7 @@ pub async fn add_lead<R: LeadRepository>(
         }
     }
 
+    require_team_owner(repository, lead.owner()).await?;
     repository.save(&lead).await?;
     Ok(NewLeadOutcome {
         lead,
@@ -129,13 +154,14 @@ pub async fn find_lead<R: LeadRepository>(repository: &R, id: Uuid) -> Result<Le
         .ok_or_else(|| AppError::rejected("lead_not_found", "No se encontró el lead"))
 }
 
-pub async fn assign_lead<R: LeadRepository>(
-    repository: &R,
-    id: Uuid,
-    owner: &str,
-) -> Result<Lead, AppError> {
+/// Gives the lead a team member as responsible. A blank owner clears it.
+pub async fn assign_lead<R>(repository: &R, id: Uuid, owner: &str) -> Result<Lead, AppError>
+where
+    R: LeadRepository + SettingsRepository,
+{
     let mut lead = find_lead(repository, id).await?;
     lead.assign(Some(owner));
+    require_team_owner(repository, lead.owner()).await?;
     repository.save(&lead).await?;
 
     Ok(lead)

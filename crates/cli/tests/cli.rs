@@ -655,6 +655,10 @@ fn a_lead_list_can_be_searched() {
 fn a_lead_can_be_assigned() {
     let scratch = Scratch::new();
     let lead = add_lead(&scratch.db(), "a", "Lead", "DAC");
+    data(&run(
+        &scratch.db(),
+        &["settings", "set", "--add-member", "Ana"],
+    ));
 
     data(&run(
         &scratch.db(),
