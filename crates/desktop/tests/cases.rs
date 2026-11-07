@@ -277,7 +277,7 @@ fn describes_steps_cases_and_owners() {
 fn parses_an_edited_step_date_and_explains_a_blank_one() {
     assert_eq!(parse_step_date("2026-12-01"), Ok(date!(2026 - 12 - 01)));
     assert_eq!(
-        parse_step_date(""),
+        parse_step_date("").map_err(|error| error.to_string()),
         Err("Ingresa la fecha del paso".to_owned())
     );
 }
@@ -370,6 +370,9 @@ async fn advancing_a_signed_lead_is_refused_and_opens_no_case() {
 
     let refused = save_advance(&store, signed, TODAY).await;
 
-    assert_eq!(refused, Err("El lead ya está en la etapa final".to_owned()));
+    assert_eq!(
+        refused.map_err(|error| error.to_string()),
+        Err("El lead ya está en la etapa final".to_owned())
+    );
     assert_eq!(store.open_cases().await.unwrap(), Vec::new());
 }

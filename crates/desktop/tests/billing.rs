@@ -520,7 +520,8 @@ fn reads_the_contract_total_and_explains_a_bad_one() {
             BillingEdit::Total("1234,50".to_owned()),
             &blank(),
             TODAY
-        ),
+        )
+        .map_err(|error| error.to_string()),
         Err("Ingresa un monto mayor que cero, por ejemplo 1,234.50".to_owned())
     );
 }
@@ -530,7 +531,8 @@ fn applies_the_suggested_plan_and_explains_a_missing_total() {
     let mut file = case_file("Minera", "DAC");
 
     assert_eq!(
-        billing_change(&file, BillingEdit::Suggest, &blank(), TODAY),
+        billing_change(&file, BillingEdit::Suggest, &blank(), TODAY)
+            .map_err(|error| error.to_string()),
         Err("Ingresa primero el total del contrato".to_owned())
     );
 
@@ -616,7 +618,8 @@ fn edits_a_milestone_one_field_at_a_time() {
             BillingEdit::Title(item.clone(), " ".to_owned()),
             &blank(),
             TODAY
-        ),
+        )
+        .map_err(|error| error.to_string()),
         Err("El campo concepto es obligatorio".to_owned())
     );
     assert_eq!(
@@ -625,7 +628,8 @@ fn edits_a_milestone_one_field_at_a_time() {
             BillingEdit::DueDate(item, String::new()),
             &blank(),
             TODAY
-        ),
+        )
+        .map_err(|error| error.to_string()),
         Err("Ingresa la fecha del hito".to_owned())
     );
 }
@@ -696,7 +700,7 @@ async fn reports_a_billing_save_failure() {
     let failed = save_billing(&store, BillingChange::Delete(Uuid::now_v7())).await;
 
     assert_eq!(
-        failed,
+        failed.map_err(|error| error.to_string()),
         Err("No se pudo acceder a los datos: El hito de cobro ya no existe".to_owned())
     );
 }
@@ -756,7 +760,7 @@ async fn refuses_to_close_a_case_whose_lead_is_missing() {
     let refused = save_close(&store, file.case.clone(), TODAY).await;
 
     assert_eq!(
-        refused,
+        refused.map_err(|error| error.to_string()),
         Err("No se encontró el lead del expediente".to_owned())
     );
     assert_eq!(file.case.status(), CaseStatus::Open);

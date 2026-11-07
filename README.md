@@ -35,7 +35,7 @@ Totals use integer cents. Unit prices exclude IGV. A line is quantity times unit
 
 A draft PDF says "Borrador" and uses the current company data. Marking a quote as sent freezes that data on it. A blank company field is left out of the document, and the app asks before sending a quote without a company name. Every page states that the quote is not a tax receipt or invoice; the app issues no SUNAT documents.
 
-`crates/desktop/assets/fonts` embeds Noto Sans Regular and Bold under the SIL Open Font License, in `OFL.txt` beside them. PDF fonts are subset, so a one-page quote weighs about 23 KB.
+`crates/application` embeds, from `crates/desktop/assets/fonts`, Noto Sans Regular and Bold under the SIL Open Font License, in `OFL.txt` beside them. PDF fonts are subset, so a one-page quote weighs about 23 KB.
 
 ## Import prospects
 
@@ -66,9 +66,10 @@ The file comes from the public reduced RUC roll, which has no phone or email. Ap
 | `crates/domain` | Business rules and the repository port | No I/O or UI crates |
 | `crates/storage` | SQLite adapter and migrations | `domain` |
 | `crates/importer` | `cominorsa-import` CLI for prospect CSV files | `domain`, `storage` |
-| `crates/desktop` | Dioxus desktop UI and startup | `domain`, `storage` |
+| `crates/application` | Use cases, display rules, and the quote PDF, free of UI types | `domain`, `storage` |
+| `crates/desktop` | Dioxus desktop UI and startup | `application`, `domain`, `storage` |
 
-Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adapter can reuse `domain` and replace SQLite behind `LeadRepository` and `CaseRepository`.
+Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adapter can reuse `domain` and replace SQLite behind `LeadRepository` and `CaseRepository`. Only backup, restore, and the desktop's startup name `SqliteLeads` directly.
 
 ## Current limits
 

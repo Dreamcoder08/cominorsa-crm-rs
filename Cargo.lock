@@ -429,18 +429,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "cominorsa-application"
+version = "0.1.0"
+dependencies = [
+ "cominorsa-domain",
+ "cominorsa-storage",
+ "krilla",
+ "skrifa",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "cominorsa-desktop"
 version = "0.1.0"
 dependencies = [
+ "cominorsa-application",
  "cominorsa-domain",
  "cominorsa-storage",
  "dioxus",
  "dioxus-ssr",
  "directories",
  "embed-resource",
- "krilla",
  "rfd",
- "skrifa",
  "time",
  "tokio",
  "uuid",
@@ -4222,6 +4235,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5255,6 +5274,7 @@ checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
+ "sha1_smol",
  "wasm-bindgen",
 ]
 

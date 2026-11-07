@@ -520,7 +520,8 @@ fn saving_shows_the_domain_message_for_a_bad_line() {
     values.lines[0].quantity = "1.5".to_owned();
 
     assert_eq!(
-        quote_change(&lead(), QuoteEdit::Save, &values, &[], &settings(), TODAY),
+        quote_change(&lead(), QuoteEdit::Save, &values, &[], &settings(), TODAY)
+            .map_err(|error| error.to_string()),
         Err("La cantidad debe ser un número entero mayor que cero".to_owned())
     );
 }
@@ -533,11 +534,13 @@ fn saving_names_a_missing_date() {
     valid.valid_until = String::new();
 
     assert_eq!(
-        quote_change(&lead(), QuoteEdit::Save, &issued, &[], &settings(), TODAY),
+        quote_change(&lead(), QuoteEdit::Save, &issued, &[], &settings(), TODAY)
+            .map_err(|error| error.to_string()),
         Err("Ingresa la fecha de emisión".to_owned())
     );
     assert_eq!(
-        quote_change(&lead(), QuoteEdit::Save, &valid, &[], &settings(), TODAY),
+        quote_change(&lead(), QuoteEdit::Save, &valid, &[], &settings(), TODAY)
+            .map_err(|error| error.to_string()),
         Err("Ingresa la fecha de validez".to_owned())
     );
 }
@@ -579,7 +582,8 @@ fn an_edit_of_a_quote_already_sent_is_refused() {
             &[quote],
             &settings(),
             TODAY
-        ),
+        )
+        .map_err(|error| error.to_string()),
         Err("Una cotización enviada no se cambia: crea una nueva versión".to_owned())
     );
 }
@@ -633,7 +637,8 @@ fn a_superseded_quote_can_no_longer_be_decided() {
             &quotes,
             &settings(),
             TODAY,
-        ),
+        )
+        .map_err(|error| error.to_string()),
         Err("Esta versión ya fue reemplazada por otra más reciente".to_owned())
     );
 }

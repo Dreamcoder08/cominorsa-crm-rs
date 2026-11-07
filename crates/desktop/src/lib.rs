@@ -1,20 +1,17 @@
-//! Desktop adapter: Dioxus views over the domain and storage crates.
+//! Desktop adapter: Dioxus views over the application layer.
 
-use std::{env, fs, path::PathBuf};
+use std::{env, path::PathBuf};
 
 mod billing_view;
 mod cases_view;
 mod presentation;
-mod quote_flow;
-mod quote_pdf;
 mod quote_view;
 mod settings_view;
 mod views;
 
 use cominorsa_domain::{
-    BillingMilestone, BillingRepository, Case, CaseClosure, CaseFile, CaseRepository, CaseStep,
-    DomainError, Lead, LeadRepository, Money, NewLead, NewMilestone, Prospect, ProspectRepository,
-    Quote, QuoteRepository, Settings, SettingsRepository, Stage, procedure_template,
+    Case, CaseFile, CaseRepository, CaseStep, Lead, LeadRepository, Prospect, ProspectRepository,
+    Quote, QuoteRepository, Settings, SettingsRepository,
 };
 use cominorsa_storage::SqliteLeads;
 use dioxus::{
@@ -22,28 +19,23 @@ use dioxus::{
     prelude::*,
 };
 use directories::ProjectDirs;
-use time::{
-    Date, OffsetDateTime,
-    format_description::{BorrowedFormatItem, well_known::Iso8601},
-    macros::{format_description, offset},
-};
 use uuid::Uuid;
 
 pub use billing_view::BillingPanel;
 pub use cases_view::{CaseDetail, Cases, CloseStep};
-pub use presentation::{
-    AgendaGroups, AgendaItem, FollowUp, PipelineSummary, QUOTE_TAX_NOTE, accepted_notice,
-    case_progress, close_warning, closed_case_label, closing_notice, company_lines,
-    company_warning, format_date, format_igv_rate, format_soles, format_timestamp, igv_input,
-    igv_label, matches_query, milestone_gap_warning, milestone_status_label, money_input,
-    next_follow_up, owner_options, profile_label, quote_file_name, quote_status_class,
-    renewal_note, responsible_label, step_status_label, suggested_total_note, tax_status_class,
+pub use cominorsa_application::{
+    AgendaGroups, AgendaItem, BillingChange, BillingEdit, Clock, FollowUp, FormValues,
+    MilestoneValues, PROSPECT_PAGE_SIZE, PipelineSummary, QUOTE_TAX_NOTE, QuoteChange, QuoteEdit,
+    QuoteLineValues, QuoteValues, accepted_notice, billing_change, case_progress, close_warning,
+    closed_case_label, closing_notice, company_lines, company_warning, create_backup, format_date,
+    format_igv_rate, format_soles, format_timestamp, igv_input, igv_label, lead_quotes,
+    matches_query, milestone_gap_warning, milestone_status_label, money_input, next_follow_up,
+    owner_options, parse_form, parse_step_date, profile_label, quote_change, quote_file_name,
+    quote_notice, quote_pdf, quote_preview, renewal_note, responsible_label, restore_backup,
+    save_advance, save_billing, save_close, save_quote, step_status_label, suggested_total_note,
+    today_in_peru, toggled_step, write_pdf,
 };
-pub use quote_flow::{
-    QuoteChange, QuoteEdit, QuoteLineValues, QuoteValues, lead_quotes, quote_change, quote_notice,
-    quote_preview, save_quote,
-};
-pub use quote_pdf::{quote_pdf, write_pdf};
+pub use presentation::{quote_status_class, tax_status_class};
 pub use quote_view::QuotePanel;
 pub use settings_view::{SaveState, SettingsView};
 pub use views::{Agenda, LeadForm, Prospects, Section, Shell, Workspace};
@@ -51,247 +43,9 @@ pub use views::{Agenda, LeadForm, Prospects, Section, Shell, Workspace};
 const STYLE: &str = include_str!("style.css");
 const ICON: &[u8] = include_bytes!("../assets/icon.png");
 const DATABASE_PATH_VARIABLE: &str = "COMINORSA_DB_PATH";
-const PROSPECT_PAGE_SIZE: u32 = 100;
-const FILE_STAMP: &[BorrowedFormatItem<'_>] =
-    format_description!("[year][month][day]-[hour][minute][second]");
-const MANUAL_REVIEW_SERVICE: &str = "REVISAR_MANUAL";
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct FormValues {
-    pub name: String,
-    pub phone: String,
-    pub ruc: String,
-    pub service: String,
-    pub owner: String,
-    pub follow_up_on: String,
-}
-
-impl FormValues {
-    /// Starts with a real value: an unset date input shows a greyed-out date
-    /// that looks filled in but submits nothing.
-    pub fn starting_on(follow_up_on: Date) -> Self {
-        Self {
-            follow_up_on: follow_up_on.to_string(),
-            ..Self::default()
-        }
-    }
-
-    /// Phone stays blank: sources carry no contact data. Only confirmed RUCs prefill.
-    pub fn from_prospect(prospect: &Prospect, follow_up_on: Date) -> Self {
-        let service = match prospect.potential_service.as_str() {
-            MANUAL_REVIEW_SERVICE => "",
-            service => service,
-        };
-
-        let ruc = prospect
-            .tax
-            .as_ref()
-            .filter(|tax| !tax.approximate)
-            .map_or_else(String::new, |tax| tax.ruc.clone());
-
-        Self {
-            name: prospect.name.clone(),
-            ruc,
-            service: service.to_owned(),
-            ..Self::starting_on(follow_up_on)
-        }
-    }
-}
-
-/// The new-milestone form, as typed.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct MilestoneValues {
-    pub title: String,
-    pub amount: String,
-    pub due_on: String,
-}
-
-impl MilestoneValues {
-    pub fn starting_on(due_on: Date) -> Self {
-        Self {
-            due_on: due_on.to_string(),
-            ..Self::default()
-        }
-    }
-}
-
-/// What a person did in the billing panel, before validation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BillingEdit {
-    Total(String),
-    Suggest,
-    Add,
-    Title(BillingMilestone, String),
-    Amount(BillingMilestone, String),
-    DueDate(BillingMilestone, String),
-    TogglePaid(BillingMilestone),
-    Delete(Uuid),
-}
-
-/// A validated billing change, ready to persist.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BillingChange {
-    Total(Uuid, Money),
-    Add(Vec<BillingMilestone>),
-    Save(BillingMilestone),
-    Delete(Uuid),
-}
-
-/// Validates one edit of the billing panel through the domain rules.
-pub fn billing_change(
-    file: &CaseFile,
-    edit: BillingEdit,
-    draft: &MilestoneValues,
-    today: Date,
-) -> Result<BillingChange, String> {
-    let message = |error: DomainError| error.to_string();
-
-    match edit {
-        BillingEdit::Total(text) => Money::parse(&text)
-            .map(|total| BillingChange::Total(file.case.id(), total))
-            .map_err(message),
-        BillingEdit::Suggest => file
-            .suggested_milestones(today)
-            .map(BillingChange::Add)
-            .map_err(message),
-        BillingEdit::Add => {
-            let amount = Money::parse(&draft.amount).map_err(message)?;
-            let milestone = BillingMilestone::create(NewMilestone {
-                case_id: file.case.id(),
-                position: file.next_milestone_position(),
-                title: draft.title.clone(),
-                amount,
-                due_on: parse_milestone_date(&draft.due_on)?,
-            })
-            .map_err(message)?;
-
-            Ok(BillingChange::Add(vec![milestone]))
-        }
-        BillingEdit::Title(mut milestone, title) => {
-            milestone.rename(&title).map_err(message)?;
-            Ok(BillingChange::Save(milestone))
-        }
-        BillingEdit::Amount(mut milestone, text) => {
-            let amount = Money::parse(&text).map_err(message)?;
-            milestone.set_amount(amount).map_err(message)?;
-            Ok(BillingChange::Save(milestone))
-        }
-        BillingEdit::DueDate(mut milestone, value) => {
-            milestone.reschedule(parse_milestone_date(&value)?);
-            Ok(BillingChange::Save(milestone))
-        }
-        BillingEdit::TogglePaid(mut milestone) => {
-            if milestone.is_paid() {
-                milestone.mark_unpaid();
-            } else {
-                milestone.mark_paid(today);
-            }
-            Ok(BillingChange::Save(milestone))
-        }
-        BillingEdit::Delete(id) => Ok(BillingChange::Delete(id)),
-    }
-}
-
-fn parse_milestone_date(value: &str) -> Result<Date, String> {
-    Date::parse(value, &Iso8601::DATE).map_err(|_| "Ingresa la fecha del hito".to_owned())
-}
-
-pub async fn save_billing<R: BillingRepository>(
-    repository: &R,
-    change: BillingChange,
-) -> Result<(), String> {
-    let saved = match change {
-        BillingChange::Total(case_id, total) => {
-            repository.save_contract_total(case_id, total).await
-        }
-        BillingChange::Add(milestones) => repository.add_milestones(&milestones).await,
-        BillingChange::Save(milestone) => repository.save_milestone(&milestone).await,
-        BillingChange::Delete(id) => repository.delete_milestone(id).await,
-    };
-
-    saved.map_err(|error| error.to_string())
-}
-
-/// Closes the case and creates its renewal lead in one atomic operation.
-/// Returns the lead created, and `None` for a service that does not recur or a
-/// repeat, which changes nothing.
-pub async fn save_close<R>(repository: &R, case: Case, today: Date) -> Result<Option<Lead>, String>
-where
-    R: LeadRepository + CaseRepository,
-{
-    let leads = repository.list().await.map_err(|error| error.to_string())?;
-    let source = leads
-        .iter()
-        .find(|lead| lead.id() == case.lead_id())
-        .ok_or_else(|| "No se encontró el lead del expediente".to_owned())?;
-    let closure = CaseClosure::of(case, source, today);
-    let closed = repository
-        .close_case(&closure)
-        .await
-        .map_err(|error| error.to_string())?;
-
-    Ok(closure.renewal.filter(|_| closed))
-}
-
-pub fn parse_form(values: FormValues) -> Result<Lead, String> {
-    let follow_up_on = Date::parse(&values.follow_up_on, &Iso8601::DATE)
-        .map_err(|_| "Ingresa la fecha de seguimiento".to_owned())?;
-
-    Lead::create(NewLead {
-        name: values.name,
-        phone: values.phone,
-        ruc: Some(values.ruc),
-        service: values.service,
-        owner: Some(values.owner),
-        follow_up_on,
-    })
-    .map_err(|error| error.to_string())
-}
-
-pub fn parse_step_date(value: &str) -> Result<Date, String> {
-    Date::parse(value, &Iso8601::DATE).map_err(|_| "Ingresa la fecha del paso".to_owned())
-}
-
-/// Saves one pipeline move. Reaching the final stage opens the case in the same
-/// atomic operation, with suggested step dates counted from `today` and the
-/// total of an accepted quote as the suggested contract total.
-pub async fn save_advance<R>(repository: &R, mut lead: Lead, today: Date) -> Result<(), String>
-where
-    R: LeadRepository + CaseRepository + QuoteRepository,
-{
-    lead.advance().map_err(|error| error.to_string())?;
-
-    if lead.stage() != Stage::ContractSigned {
-        return repository
-            .save(&lead)
-            .await
-            .map_err(|error| error.to_string());
-    }
-
-    let template = procedure_template(lead.service());
-    let mut opening = CaseFile::open(&lead, today, &template).map_err(|error| error.to_string())?;
-    let quotes = repository
-        .quotes()
-        .await
-        .map_err(|error| error.to_string())?;
-    opening
-        .suggest_total_from(&quotes)
-        .map_err(|error| error.to_string())?;
-
-    repository
-        .sign_and_open(&lead, &opening)
-        .await
-        .map(|_| ())
-        .map_err(|error| error.to_string())
-}
 
 pub fn window_icon() -> Result<Icon, String> {
     icon_from_memory(ICON).map_err(|error| error.to_string())
-}
-
-/// Peru has a fixed UTC-5 offset and no daylight saving time.
-fn today_in_peru() -> Date {
-    OffsetDateTime::now_utc().to_offset(offset!(-5)).date()
 }
 
 fn database_path() -> Result<PathBuf, String> {
@@ -304,31 +58,10 @@ fn database_path() -> Result<PathBuf, String> {
         .ok_or_else(|| "No se encontró la carpeta de datos".to_owned())
 }
 
-fn file_stamp() -> String {
-    OffsetDateTime::now_utc()
-        .to_offset(offset!(-5))
-        .format(FILE_STAMP)
-        .unwrap_or_else(|_| OffsetDateTime::now_utc().unix_timestamp().to_string())
-}
-
-/// Writes a timestamped copy to the chosen folder and returns its path.
-async fn create_backup(store: SqliteLeads, folder: String) -> Result<PathBuf, String> {
-    fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
-    let path = PathBuf::from(folder).join(format!("crm-{}.db", file_stamp()));
-
-    store
-        .backup_to(&path)
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(path)
-}
-
-async fn restore_backup(store: SqliteLeads, backup: PathBuf) -> Result<SqliteLeads, String> {
+async fn restore_copy(store: SqliteLeads, backup: PathBuf) -> Result<SqliteLeads, String> {
     let database = database_path()?;
-    let safety = database.with_extension(format!("antes-de-restaurar-{}.db", file_stamp()));
 
-    store
-        .restore(&database, &backup, &safety)
+    restore_backup(store, &database, &backup, &Clock::system())
         .await
         .map_err(|error| error.to_string())
 }
@@ -486,7 +219,9 @@ pub fn App() -> Element {
         saving.set(true);
         spawn(async move {
             let saved = async {
-                save_advance(&repository, lead, today_in_peru()).await?;
+                save_advance(&repository, lead, today_in_peru())
+                    .await
+                    .map_err(|error| error.to_string())?;
                 let list = repository.list().await.map_err(|error| error.to_string())?;
                 let open = repository
                     .active_cases()
@@ -540,7 +275,7 @@ pub fn App() -> Element {
         let change = match billing_change(&file, edit, &milestone_draft.read(), today_in_peru()) {
             Ok(change) => change,
             Err(message) => {
-                action_error.set(message);
+                action_error.set(message.to_string());
                 return;
             }
         };
@@ -548,7 +283,9 @@ pub fn App() -> Element {
         saving.set(true);
         spawn(async move {
             let saved = async {
-                save_billing(&repository, change).await?;
+                save_billing(&repository, change)
+                    .await
+                    .map_err(|error| error.to_string())?;
                 repository
                     .active_cases()
                     .await
@@ -578,7 +315,9 @@ pub fn App() -> Element {
         saving.set(true);
         spawn(async move {
             let saved = async {
-                let renewal = save_close(&repository, case, today_in_peru()).await?;
+                let renewal = save_close(&repository, case, today_in_peru())
+                    .await
+                    .map_err(|error| error.to_string())?;
                 let list = repository.list().await.map_err(|error| error.to_string())?;
                 let open = repository
                     .active_cases()
@@ -617,7 +356,7 @@ pub fn App() -> Element {
         let change = match change {
             Ok(change) => change,
             Err(message) => {
-                quote_error.set(message);
+                quote_error.set(message.to_string());
                 return;
             }
         };
@@ -629,7 +368,9 @@ pub fn App() -> Element {
         saving.set(true);
         spawn(async move {
             let saved = async {
-                let quote = save_quote(&repository, change).await?;
+                let quote = save_quote(&repository, change)
+                    .await
+                    .map_err(|error| error.to_string())?;
                 let list = repository
                     .quotes()
                     .await
@@ -754,10 +495,11 @@ pub fn App() -> Element {
                         };
                         busy.set(true);
                         spawn(async move {
-                            match create_backup(repository, folder).await {
+                            let clock = Clock::system();
+                            match create_backup(&repository, &folder, &clock).await {
                                 Ok(path) => {
                                     let mut next = settings();
-                                    next.record_backup(OffsetDateTime::now_utc().unix_timestamp());
+                                    next.record_backup(clock.now_unix());
                                     save_settings(next);
                                     backup_notice.set(format!("Copia creada en {}", path.display()));
                                 }
@@ -788,7 +530,7 @@ pub fn App() -> Element {
                         busy.set(true);
                         spawn(async move {
                             let restored = async {
-                                let reopened = restore_backup(repository, backup).await?;
+                                let reopened = restore_copy(repository, backup).await?;
                                 let list = reopened.list().await.map_err(|error| error.to_string())?;
                                 let open = reopened.active_cases().await.map_err(|error| error.to_string())?;
                                 let saved = reopened.load().await.map_err(|error| error.to_string())?;
@@ -858,16 +600,11 @@ pub fn App() -> Element {
                             selected_case.set(None);
                             reset_case_view();
                         },
-                        on_toggle: move |mut step: CaseStep| {
+                        on_toggle: move |step: CaseStep| {
                             if saving() {
                                 return;
                             }
-                            if step.is_done() {
-                                step.mark_undone();
-                            } else {
-                                step.mark_done(today_in_peru());
-                            }
-                            save_step(step);
+                            save_step(toggled_step(step, today_in_peru()));
                         },
                         on_due_date: move |(mut step, value): (CaseStep, String)| {
                             if saving() {
@@ -878,7 +615,7 @@ pub fn App() -> Element {
                                     step.reschedule(date);
                                     save_step(step);
                                 }
-                                Err(message) => action_error.set(message),
+                                Err(message) => action_error.set(message.to_string()),
                             }
                         },
                     }
@@ -972,7 +709,7 @@ pub fn App() -> Element {
                     }
                     match parse_form(form()) {
                         Ok(lead) => persist(lead, true),
-                        Err(message) => form_error.set(message),
+                        Err(message) => form_error.set(message.to_string()),
                     }
                 },
                 on_close: move |_| panel_open.set(false),

@@ -5,13 +5,12 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+cominorsa-application.workspace = true
 cominorsa-domain.workspace = true
 cominorsa-storage.workspace = true
 dioxus.workspace = true
 directories.workspace = true
-krilla.workspace = true
 rfd.workspace = true
-skrifa.workspace = true
 time.workspace = true
 tokio.workspace = true
 uuid.workspace = true

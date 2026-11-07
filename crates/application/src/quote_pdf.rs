@@ -24,10 +24,10 @@ use skrifa::{
     instance::{LocationRef, Size},
 };
 
-use crate::{QUOTE_TAX_NOTE, company_lines, format_date, format_soles, igv_label};
+use crate::presentation::{QUOTE_TAX_NOTE, company_lines, format_date, format_soles, igv_label};
 
-const REGULAR_FONT: &[u8] = include_bytes!("../assets/fonts/NotoSans-Regular.ttf");
-const BOLD_FONT: &[u8] = include_bytes!("../assets/fonts/NotoSans-Bold.ttf");
+const REGULAR_FONT: &[u8] = include_bytes!("../../desktop/assets/fonts/NotoSans-Regular.ttf");
+const BOLD_FONT: &[u8] = include_bytes!("../../desktop/assets/fonts/NotoSans-Bold.ttf");
 
 const PAGE_WIDTH: f32 = 595.28;
 const PAGE_HEIGHT: f32 = 841.89;

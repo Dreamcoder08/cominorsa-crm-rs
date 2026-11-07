@@ -1,13 +1,19 @@
 //! The quote form and its changes, validated through the domain.
 
+use std::path::{Path, PathBuf};
+
 use cominorsa_domain::{
-    DomainError, IgvRate, Lead, Quote, QuoteContent, QuoteDraft, QuoteLine, QuoteRepository,
-    QuoteStatus, QuoteTotals, Settings, is_superseded,
+    CaseRepository, DomainError, IgvRate, Lead, Quote, QuoteContent, QuoteDraft, QuoteLine,
+    QuoteRepository, QuoteStatus, QuoteTotals, Settings, SettingsRepository, is_superseded,
 };
 use time::{Date, Duration, format_description::well_known::Iso8601};
 use uuid::Uuid;
 
-use crate::{accepted_notice, money_input};
+use crate::{
+    error::AppError,
+    presentation::{accepted_notice, money_input},
+    quote_pdf::{quote_pdf, write_pdf},
+};
 
 /// An editable suggestion for a new quote, pending client validation.
 const SUGGESTED_VALIDITY_DAYS: i64 = 15;
@@ -94,15 +100,15 @@ impl QuoteValues {
             .collect()
     }
 
-    fn content(&self) -> Result<QuoteContent, String> {
+    fn content(&self) -> Result<QuoteContent, AppError> {
         let date = |value: &str, missing: &str| {
-            Date::parse(value, &Iso8601::DATE).map_err(|_| missing.to_owned())
+            Date::parse(value, &Iso8601::DATE).map_err(|_| AppError::invalid_date(missing))
         };
 
         Ok(QuoteContent {
             issued_on: date(&self.issued_on, "Ingresa la fecha de emisión")?,
             valid_until: date(&self.valid_until, "Ingresa la fecha de validez")?,
-            lines: self.parsed_lines().map_err(|error| error.to_string())?,
+            lines: self.parsed_lines()?,
             notes: self.notes.clone(),
         })
     }
@@ -134,9 +140,12 @@ pub fn quote_preview(values: &QuoteValues, igv_rate: IgvRate) -> Option<QuoteTot
 }
 
 /// A decision on an old version would compete with the newer one.
-fn current(quote: Quote, quotes: &[Quote]) -> Result<Quote, String> {
+fn current(quote: Quote, quotes: &[Quote]) -> Result<Quote, AppError> {
     if is_superseded(&quote, quotes) {
-        Err("Esta versión ya fue reemplazada por otra más reciente".to_owned())
+        Err(AppError::rejected(
+            "quote_superseded",
+            "Esta versión ya fue reemplazada por otra más reciente",
+        ))
     } else {
         Ok(quote)
     }
@@ -150,67 +159,160 @@ pub fn quote_change(
     quotes: &[Quote],
     settings: &Settings,
     today: Date,
-) -> Result<QuoteChange, String> {
-    let message = |error: DomainError| error.to_string();
+) -> Result<QuoteChange, AppError> {
     let igv_rate = settings.igv_rate();
 
     match edit {
         QuoteEdit::Save => {
             let content = values.content()?;
             let Some(id) = values.editing else {
-                return QuoteDraft::for_lead(lead, content, igv_rate)
-                    .map(QuoteChange::Create)
-                    .map_err(message);
+                return Ok(QuoteChange::Create(QuoteDraft::for_lead(
+                    lead, content, igv_rate,
+                )?));
             };
             let mut quote = quotes
                 .iter()
                 .find(|quote| quote.id() == id)
                 .cloned()
-                .ok_or_else(|| "La cotización ya no existe".to_owned())?;
-            quote.revise(content, igv_rate).map_err(message)?;
+                .ok_or_else(|| {
+                    AppError::rejected("quote_not_found", "La cotización ya no existe")
+                })?;
+            quote.revise(content, igv_rate)?;
             Ok(QuoteChange::Draft(quote))
         }
         QuoteEdit::Send(mut quote) => {
-            quote.mark_sent(settings.company()).map_err(message)?;
+            quote.mark_sent(settings.company())?;
             Ok(QuoteChange::Status(quote, QuoteStatus::Draft))
         }
         QuoteEdit::Accept(quote) => {
             let mut quote = current(quote, quotes)?;
-            quote.mark_accepted().map_err(message)?;
+            quote.mark_accepted()?;
             Ok(QuoteChange::Status(quote, QuoteStatus::Sent))
         }
         QuoteEdit::Reject(quote) => {
             let mut quote = current(quote, quotes)?;
-            quote.mark_rejected().map_err(message)?;
+            quote.mark_rejected()?;
             Ok(QuoteChange::Status(quote, QuoteStatus::Sent))
         }
-        QuoteEdit::NewVersion(quote) => quote
-            .new_version(today, igv_rate)
-            .map(QuoteChange::Create)
-            .map_err(message),
+        QuoteEdit::NewVersion(quote) => {
+            Ok(QuoteChange::Create(quote.new_version(today, igv_rate)?))
+        }
     }
 }
 
 pub async fn save_quote<R: QuoteRepository>(
     repository: &R,
     change: QuoteChange,
-) -> Result<Quote, String> {
-    let message = |error: cominorsa_domain::RepositoryError| error.to_string();
-
+) -> Result<Quote, AppError> {
     match change {
-        QuoteChange::Create(draft) => repository.create_quote(&draft).await.map_err(message),
+        QuoteChange::Create(draft) => Ok(repository.create_quote(&draft).await?),
         QuoteChange::Draft(quote) => {
-            repository.save_quote_draft(&quote).await.map_err(message)?;
+            repository.save_quote_draft(&quote).await?;
             Ok(quote)
         }
         QuoteChange::Status(quote, from) => {
-            repository
-                .save_quote_status(&quote, from)
-                .await
-                .map_err(message)?;
+            repository.save_quote_status(&quote, from).await?;
             Ok(quote)
         }
     }
+}
+
+/// A saved quote change and the words that describe it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedQuote {
+    pub quote: Quote,
+    pub notice: String,
+}
+
+/// Runs one action of the quote panel against the stored quotes and settings.
+pub async fn save_quote_edit<R>(
+    repository: &R,
+    lead: &Lead,
+    edit: QuoteEdit,
+    values: &QuoteValues,
+    today: Date,
+) -> Result<SavedQuote, AppError>
+where
+    R: QuoteRepository + SettingsRepository + CaseRepository,
+{
+    let quotes = repository.quotes().await?;
+    let settings = repository.load().await?;
+    let change = quote_change(lead, edit.clone(), values, &quotes, &settings, today)?;
+    let case_is_open = repository
+        .active_cases()
+        .await?
+        .iter()
+        .any(|file| file.case.lead_id() == lead.id());
+    let quote = save_quote(repository, change).await?;
+    let notice = quote_notice(&edit, &quote, case_is_open);
+
+    Ok(SavedQuote { quote, notice })
+}
+
+/// Marks a quote sent. The panel asks before sending without a company name,
+/// so here that choice has to be explicit too.
+pub async fn send_quote<R>(
+    repository: &R,
+    lead: &Lead,
+    quote: Quote,
+    allow_blank_company: bool,
+    today: Date,
+) -> Result<SavedQuote, AppError>
+where
+    R: QuoteRepository + SettingsRepository + CaseRepository,
+{
+    let settings = repository.load().await?;
+    if !settings.company().has_name() && !allow_blank_company {
+        return Err(AppError::rejected(
+            "company_name_missing",
+            "Falta el nombre de la empresa. Agrégalo en Configuración antes de emitir.",
+        ));
+    }
+
+    save_quote_edit(
+        repository,
+        lead,
+        QuoteEdit::Send(quote),
+        &QuoteValues::default(),
+        today,
+    )
+    .await
+}
+
+/// Finds a quote by its number, such as `COT-2026-0001-V2`, or by its id.
+pub async fn find_quote<R: QuoteRepository>(
+    repository: &R,
+    reference: &str,
+) -> Result<Quote, AppError> {
+    let wanted = reference.trim();
+
+    repository
+        .quotes()
+        .await?
+        .into_iter()
+        .find(|quote| {
+            quote.number().to_string().eq_ignore_ascii_case(wanted)
+                || quote.id().to_string().eq_ignore_ascii_case(wanted)
+        })
+        .ok_or_else(|| {
+            AppError::rejected(
+                "quote_not_found",
+                format!("No se encontró la cotización {wanted}"),
+            )
+        })
+}
+
+/// Renders the document with the company it must show and writes it to `path`.
+pub async fn save_quote_pdf<R: SettingsRepository>(
+    repository: &R,
+    quote: &Quote,
+    path: &Path,
+) -> Result<PathBuf, AppError> {
+    let settings = repository.load().await?;
+    let bytes = quote_pdf(quote, quote.document_company(settings.company()))
+        .map_err(|message| AppError::rejected("pdf_failed", message))?;
+
+    write_pdf(path, &bytes).map_err(|message| AppError::storage("pdf_write_failed", message))
 }
 
 /// The quotes of one lead, newest number first.
