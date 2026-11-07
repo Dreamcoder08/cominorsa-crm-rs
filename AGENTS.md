@@ -8,6 +8,10 @@ Read `README.md` before changing behavior. Feature tracking lives in `odd/tasks/
 - Do not add outreach, WhatsApp sending, or SUNAT emission without explicit authorization for the destination, operation, and credential.
 - Run `scripts/check.sh` before committing.
 
+## CLI first
+
+Every behavior ships first through the `cominorsa` CLI and is proven there. An agent must be able to test the behavior, logic, and state without a window. The frontend only calls the same application layer, and frontend work starts only after the CLI proof passes.
+
 ## Project skills
 
 Load the matching skill from `skills/` before work.
