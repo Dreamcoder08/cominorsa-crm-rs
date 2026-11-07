@@ -198,7 +198,11 @@ impl SqliteLeads {
             .await
             .map_err(failure)?;
 
-        MIGRATOR.run(&pool).await.map_err(failure)?;
+        if let Err(error) = MIGRATOR.run(&pool).await {
+            // Windows cannot delete a file while this connection holds it.
+            pool.close().await;
+            return Err(failure(error));
+        }
 
         Ok(Self { pool })
     }
