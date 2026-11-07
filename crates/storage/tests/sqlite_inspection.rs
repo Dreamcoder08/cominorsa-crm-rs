@@ -100,8 +100,8 @@ async fn a_current_database_reports_the_required_schema_version() {
     let database = TempDatabase::new();
     let store = SqliteLeads::open(&database.path()).await.unwrap();
 
-    assert_eq!(store.schema_version().await.unwrap(), 8);
-    assert_eq!(SqliteLeads::required_schema_version(), 8);
+    assert_eq!(store.schema_version().await.unwrap(), 9);
+    assert_eq!(SqliteLeads::required_schema_version(), 9);
 }
 
 #[tokio::test]

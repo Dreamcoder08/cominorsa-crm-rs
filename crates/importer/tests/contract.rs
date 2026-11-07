@@ -144,8 +144,9 @@ async fn an_older_schema_is_refused_with_the_file_unchanged() {
     let db = scratch.database("old.db").await;
     sqlite(
         &db,
-        "DROP TABLE quote_lines; DROP TABLE quotes; DROP TABLE quote_numbers;
-        DELETE FROM _sqlx_migrations WHERE version = 8;",
+        "ALTER TABLE leads DROP COLUMN origin; ALTER TABLE leads DROP COLUMN consent_given;
+        ALTER TABLE leads DROP COLUMN consent_on; ALTER TABLE leads DROP COLUMN consent_source;
+        DELETE FROM _sqlx_migrations WHERE version = 9;",
     );
     let bytes = fs::read(&db).unwrap();
     let names = scratch.names();
@@ -153,8 +154,8 @@ async fn an_older_schema_is_refused_with_the_file_unchanged() {
     for output in [scratch.import(&db), scratch.enrich(&db, "tax.csv")] {
         let message = refusal(&output, 3);
 
-        assert!(message.contains("versión 7"), "{message}");
-        assert!(message.contains("la 8"), "{message}");
+        assert!(message.contains("versión 8"), "{message}");
+        assert!(message.contains("la 9"), "{message}");
         assert!(message.contains("cominorsa migrate"), "{message}");
         assert_eq!(fs::read(&db).unwrap(), bytes);
         assert_eq!(scratch.names(), names);

@@ -561,7 +561,7 @@ fn status_reports_the_schema_integrity_and_counts() {
 
     let found = data(&run(&scratch.db(), &["status"]));
 
-    assert_eq!(found["schema_version"], 8);
+    assert_eq!(found["schema_version"], 9);
     assert_eq!(found["integrity_check"], "ok");
     assert_eq!(found["counts"]["leads"], 1);
     assert_eq!(found["counts"]["cases"], 1);
@@ -1053,7 +1053,7 @@ fn migrating_a_current_database_reports_no_change() {
 
     assert_eq!(
         found,
-        json!({"changed": false, "from": 8, "to": 8, "safety_copy": null})
+        json!({"changed": false, "from": 9, "to": 9, "safety_copy": null})
     );
     assert_eq!(fs::read(scratch.db()).unwrap(), before);
 }

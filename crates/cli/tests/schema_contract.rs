@@ -131,9 +131,9 @@ fn init_creates_a_database_at_the_current_schema() {
     let created = data(&run(&db, &["init"]));
 
     assert_eq!(created["created"], true);
-    assert_eq!(created["schema_version"], 8);
+    assert_eq!(created["schema_version"], 9);
     let found = data(&run(&db, &["status"]));
-    assert_eq!(found["schema_version"], 8);
+    assert_eq!(found["schema_version"], 9);
     assert_eq!(found["counts"]["leads"], 0);
 }
 
@@ -159,7 +159,7 @@ fn migrate_upgrades_and_keeps_rows_and_a_copy() {
 
     assert_eq!(done["changed"], true);
     assert_eq!(done["from"], 5);
-    assert_eq!(done["to"], 8);
+    assert_eq!(done["to"], 9);
     let copy = scratch.file(
         done["safety_copy"]
             .as_str()

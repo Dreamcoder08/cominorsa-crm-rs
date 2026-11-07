@@ -147,7 +147,7 @@ scenario() {
     refused_absent settings set --theme dark
     refused_absent prospect import --companies none.csv --people none.csv
     expect "init creates the database" true "$(cli init | jq '.created')"
-    expect "init schema" 8 "$(cli status | jq '.schema_version')"
+    expect "init schema" 9 "$(cli status | jq '.schema_version')"
     refused 1 database_exists init
 
     echo "== team and settings"
@@ -325,14 +325,14 @@ CSV
 
     echo "== status and read-only safety"
     state="$(cli status)"
-    expect "schema version" 8 "$(jq '.schema_version' <<<"$state")"
+    expect "schema version" 9 "$(jq '.schema_version' <<<"$state")"
     expect "integrity check" ok "$(jq -r '.integrity_check' <<<"$state")"
     expect "status leads" 3 "$(jq '.counts.leads' <<<"$state")"
     expect "status cases" 2 "$(jq '.counts.cases' <<<"$state")"
     expect "status active cases" 1 "$(jq '.counts.active_cases' <<<"$state")"
     expect "status quotes" 1 "$(jq '.counts.quotes' <<<"$state")"
     expect "status prospects" 3 "$(jq '.counts.prospects' <<<"$state")"
-    expect "export names the schema" 8 "$(cli export | jq '.schema_version')"
+    expect "export names the schema" 9 "$(cli export | jq '.schema_version')"
     for read in \
         "status" "export" "agenda" "lead list" "lead summary" \
         "lead show $lead" "lead whatsapp $lead" \
@@ -444,7 +444,9 @@ echo "== an older schema is reported, never migrated by a read"
 cp "$root/first/crm.db" old.db
 sqlite3 old.db "PRAGMA journal_mode = DELETE;
     DROP TABLE quote_lines; DROP TABLE quotes; DROP TABLE quote_numbers;
-    DELETE FROM _sqlx_migrations WHERE version = 8;" >/dev/null
+    ALTER TABLE leads DROP COLUMN origin; ALTER TABLE leads DROP COLUMN consent_given;
+    ALTER TABLE leads DROP COLUMN consent_on; ALTER TABLE leads DROP COLUMN consent_source;
+    DELETE FROM _sqlx_migrations WHERE version IN (8, 9);" >/dev/null
 old_hash="$(file_hash old.db)"
 for read in \
     "status" "export" "agenda" "lead list" "prospect count" "case list" \
@@ -458,7 +460,7 @@ for read in \
     expect "file hash after '$read' on an older schema" "$old_hash" "$(file_hash old.db)"
 done
 message="$(jq -r '.error.message' old.err)"
-[[ "$message" == *"7"* && "$message" == *"8"* && "$message" == *"cominorsa migrate"* ]] ||
+[[ "$message" == *"7"* && "$message" == *"9"* && "$message" == *"cominorsa migrate"* ]] ||
     fail "the error must name both versions and the upgrade: $message"
 
 refused_writes old.db schema_outdated
@@ -519,10 +521,10 @@ echo "== only migrate upgrades"
 migration="$("$binary" --db old.db --json --today "$day" migrate | jq -c '.data')"
 expect "migrate changed" true "$(jq '.changed' <<<"$migration")"
 expect "migrate from" 7 "$(jq '.from' <<<"$migration")"
-expect "migrate to" 8 "$(jq '.to' <<<"$migration")"
+expect "migrate to" 9 "$(jq '.to' <<<"$migration")"
 [[ -f "$(jq -r '.safety_copy' <<<"$migration")" ]] || fail "migrate left no safety copy"
 db=old.db
-expect "a read works after migrating" 8 "$(cli status | jq '.schema_version')"
+expect "a read works after migrating" 9 "$(cli status | jq '.schema_version')"
 expect "migrating twice changes nothing" false "$(cli migrate | jq '.changed')"
 
 echo "== a newer schema is refused"

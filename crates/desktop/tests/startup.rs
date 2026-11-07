@@ -13,7 +13,7 @@ use cominorsa_desktop::{initial_settings, open_database};
 use cominorsa_domain::{LeadRepository, ThemePreference};
 use uuid::Uuid;
 
-const CURRENT_SCHEMA: &str = "8";
+const CURRENT_SCHEMA: &str = "9";
 const SCHEMA_VERSION: &str = "SELECT MAX(version) FROM _sqlx_migrations";
 const COPY_MARK: &str = "antes-de-migrar";
 
@@ -189,7 +189,7 @@ async fn a_first_launch_creates_a_new_database() {
 #[tokio::test]
 async fn a_current_database_opens_without_a_copy() {
     let scratch = Scratch::new();
-    let db = scratch.database_at(8).await;
+    let db = scratch.database_at(9).await;
 
     let store = open_database(&db).await.unwrap();
     assert_eq!(store.list().await.unwrap().len(), 1);
