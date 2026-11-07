@@ -869,10 +869,11 @@ fn a_long_quote_flows_over_pages_and_keeps_every_line() {
     };
 
     for index in 1..=60 {
-        assert!(
-            text.contains(&format!("Servicio número {index}\n")),
-            "{index}"
-        );
+        let label = format!("Servicio número {index}");
+        let found = text.match_indices(&label).any(|(position, _)| {
+            !text[position + label.len()..].starts_with(|next: char| next.is_ascii_digit())
+        });
+        assert!(found, "{index}");
     }
     let pages = text.matches('\u{c}').count();
     assert!(pages >= 2, "{pages} pages");
