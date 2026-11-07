@@ -90,7 +90,7 @@ Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adap
 
 ## Measured baseline
 
-Measured on Linux with WebKitGTK and an empty database: 10.4 MB release binary and about 213 MB total PSS at idle (app 96 MB, web process 92 MB, network process 25 MB). Windows uses WebView2, so measure it separately.
+Measured on Linux with WebKitGTK and an empty database. The memory figure predates the case, billing, and quote features: 20.2 MB release binary, including embedded fonts and about 213 MB total PSS at idle (app 96 MB, web process 92 MB, network process 25 MB). Windows uses WebView2, so measure it separately.
 
 ## Rules
 
