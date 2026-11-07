@@ -10,7 +10,7 @@ Read `README.md` before changing behavior. Feature tracking lives in `odd/tasks/
 
 ## CLI first
 
-Every behavior ships first through the `cominorsa` CLI and is proven there. An agent must be able to test the behavior, logic, and state without a window. The frontend only calls the same application layer, and frontend work starts only after the CLI proof passes.
+Every behavior ships first through the `cominorsa` CLI and is proven there. An agent must be able to test the behavior, logic, and state without a window. Order: CLI proof, then the extracted core library, then wrappers such as the GUI, an API, or an MCP server. Wrappers only call that library, and wrapper work starts only after the CLI proof passes.
 
 ## Project skills
 
