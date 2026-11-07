@@ -1,0 +1,6 @@
+# Pinned toolchain. Upgrade through the cominorsa-stack-freshness skill:
+# run `cargo +beta test` and `scripts/check.sh --full` on the new version first.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

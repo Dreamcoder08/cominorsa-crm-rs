@@ -1,0 +1,20 @@
+[package]
+name = "cominorsa-application"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+cominorsa-domain.workspace = true
+cominorsa-storage.workspace = true
+krilla.workspace = true
+skrifa.workspace = true
+thiserror.workspace = true
+time.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

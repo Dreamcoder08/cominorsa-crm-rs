@@ -1,0 +1,30 @@
+[package]
+name = "cominorsa-mcp"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "cominorsa-mcp"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+cominorsa-application.workspace = true
+cominorsa-domain.workspace = true
+rmcp.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+cominorsa-application.workspace = true
+serde_json.workspace = true
+time.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

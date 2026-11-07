@@ -1,0 +1,22 @@
+[package]
+name = "cominorsa-importer"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "cominorsa-import"
+path = "src/main.rs"
+
+[dependencies]
+cominorsa-domain.workspace = true
+cominorsa-storage.workspace = true
+csv.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true
+
+[lints]
+workspace = true

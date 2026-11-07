@@ -1,0 +1,10 @@
+/target
+*.db
+*.db-shm
+*.db-wal
+*.csv
+.env
+*.xlsx
+*.xls
+*.xlsm
+*.ods

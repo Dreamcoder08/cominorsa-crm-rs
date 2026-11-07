@@ -1,0 +1,528 @@
+//! Settings section. Rules live in the domain; this view only calls them.
+//! Valid changes save automatically and every section reports the same state.
+
+use cominorsa_domain::{CompanyProfile, IgvRate, Settings, ThemePreference};
+use dioxus::prelude::*;
+
+use crate::{format_timestamp, igv_input, preview_message};
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SaveState {
+    #[default]
+    Idle,
+    Saving,
+    Saved,
+    Failed(String),
+}
+
+#[component]
+pub fn SettingsView(
+    settings: Settings,
+    database: String,
+    save_state: SaveState,
+    backup_notice: String,
+    /// What the automatic backup at startup did.
+    #[props(default)]
+    auto_backup_notice: String,
+    pending_restore: Option<String>,
+    busy: bool,
+    on_change: EventHandler<Settings>,
+    on_pick_folder: EventHandler<()>,
+    on_backup: EventHandler<()>,
+    on_pick_restore: EventHandler<()>,
+    on_confirm_restore: EventHandler<()>,
+    on_cancel_restore: EventHandler<()>,
+) -> Element {
+    let mut member = use_signal(String::new);
+    let mut member_error = use_signal(String::new);
+    let mut days_text = use_signal({
+        let days = settings.follow_up_days();
+        move || days.to_string()
+    });
+    let mut days_error = use_signal(String::new);
+    let mut template_text = use_signal({
+        let template = settings.whatsapp_template().to_owned();
+        move || template
+    });
+    let mut template_error = use_signal(String::new);
+    let mut interval_text = use_signal({
+        let days = settings.backup_interval_days();
+        move || days.to_string()
+    });
+    let mut keep_text = use_signal({
+        let copies = settings.backup_keep();
+        move || copies.to_string()
+    });
+    let mut automatic_error = use_signal(String::new);
+
+    let add_member = {
+        let settings = settings.clone();
+        move |event: FormEvent| {
+            event.prevent_default();
+            let mut next = settings.clone();
+            match next.add_member(&member()) {
+                Ok(()) => {
+                    member.set(String::new());
+                    member_error.set(String::new());
+                    on_change.call(next);
+                }
+                Err(failure) => member_error.set(failure.to_string()),
+            }
+        }
+    };
+    let days_settings = settings.clone();
+    let template_settings = settings.clone();
+    let interval_settings = settings.clone();
+    let keep_settings = settings.clone();
+    let preview = preview_message(&template_text());
+    let backup_status = settings.last_backup_at().map_or_else(
+        || "Aún no hay copias".to_owned(),
+        |at| format!("Última copia: {}", format_timestamp(at)),
+    );
+    let has_folder = settings.backup_directory().is_some();
+
+    rsx! {
+        header { class: "topbar",
+            div {
+                h1 { "Configuración" }
+                p { class: "subtitle", "Los cambios se guardan solos" }
+            }
+            match &save_state {
+                SaveState::Idle => rsx! {},
+                SaveState::Saving => rsx! { p { class: "save-state", role: "status", "Guardando…" } },
+                SaveState::Saved => rsx! { p { class: "save-state saved", role: "status", "Guardado" } },
+                SaveState::Failed(reason) => rsx! {
+                    p { class: "form-error", role: "alert", "No se pudo guardar: {reason}" }
+                },
+            }
+        }
+        div { class: "settings",
+            SettingsGroup { title: "Apariencia",
+                div { class: "setting-row",
+                    div { class: "setting-info",
+                        h3 { "Tema" }
+                        p { "Sistema usa el modo claro u oscuro del equipo." }
+                    }
+                    fieldset { class: "segmented",
+                        legend { class: "visually-hidden", "Tema" }
+                        for theme in ThemePreference::ALL {
+                            {
+                                let settings = settings.clone();
+                                rsx! {
+                                    label { key: "{theme.code()}",
+                                        input {
+                                            r#type: "radio",
+                                            name: "theme",
+                                            checked: settings.theme == theme,
+                                            onchange: move |_| {
+                                                let mut next = settings.clone();
+                                                next.theme = theme;
+                                                on_change.call(next);
+                                            },
+                                        }
+                                        span { "{theme.label()}" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            SettingsGroup { title: "Equipo",
+                div { class: "setting-row stacked",
+                    div { class: "setting-info",
+                        h3 { "Personas" }
+                        p { "Aparecen como responsables de cada lead." }
+                    }
+                    if settings.team().is_empty() {
+                        p { class: "muted-note", "Aún no hay nadie: todavía no agregaste personas." }
+                    }
+                    ul { class: "team",
+                        for name in settings.team().iter().cloned() {
+                            {
+                                let settings = settings.clone();
+                                let target = name.clone();
+                                rsx! {
+                                    li { key: "{name}",
+                                        span { "{name}" }
+                                        button {
+                                            class: "secondary",
+                                            onclick: move |_| {
+                                                let mut next = settings.clone();
+                                                next.remove_member(&target);
+                                                on_change.call(next);
+                                            },
+                                            "Quitar"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    form { class: "inline-form", onsubmit: add_member,
+                        input {
+                            aria_label: "Nombre de la persona",
+                            placeholder: "Nombre",
+                            value: "{member}",
+                            oninput: move |event| member.set(event.value()),
+                        }
+                        button { class: "secondary", r#type: "submit", "Agregar" }
+                    }
+                    if !member_error().is_empty() {
+                        p { class: "form-error", role: "alert", "{member_error}" }
+                    }
+                }
+            }
+            SettingsGroup { title: "Seguimiento",
+                div { class: "setting-row",
+                    div { class: "setting-info",
+                        h3 { "Plazo sugerido" }
+                        p { "Fecha que se propone al registrar un lead." }
+                        if !days_error().is_empty() {
+                            p { class: "form-error", role: "alert", "{days_error}" }
+                        }
+                    }
+                    label { class: "days-field",
+                        input {
+                            class: "days",
+                            r#type: "number",
+                            min: 1,
+                            max: 90,
+                            aria_label: "Días para el próximo seguimiento",
+                            value: "{days_text}",
+                            oninput: move |event| {
+                                days_text.set(event.value());
+                                let mut next = days_settings.clone();
+                                let result = event
+                                    .value()
+                                    .parse()
+                                    .map_err(|_| "Escribe un número de 1 a 90".to_owned())
+                                    .and_then(|days| {
+                                        next.set_follow_up_days(days)
+                                            .map_err(|failure| failure.to_string())
+                                    });
+                                match result {
+                                    Ok(()) => {
+                                        days_error.set(String::new());
+                                        on_change.call(next);
+                                    }
+                                    Err(message) => days_error.set(message),
+                                }
+                            },
+                        }
+                        span { class: "days-unit", "días" }
+                    }
+                }
+            }
+            SettingsGroup { title: "Mensaje de WhatsApp",
+                div { class: "setting-row stacked",
+                    div { class: "setting-info",
+                        h3 { "Plantilla" }
+                        p { "Se abre lista para revisar; una persona la envía. Usa {{nombre}} y {{servicio}}." }
+                    }
+                    textarea {
+                        aria_label: "Plantilla del mensaje de WhatsApp",
+                        rows: 3,
+                        value: "{template_text}",
+                        oninput: move |event| {
+                            template_text.set(event.value());
+                            let mut next = template_settings.clone();
+                            match next.set_whatsapp_template(&event.value()) {
+                                Ok(()) => {
+                                    template_error.set(String::new());
+                                    on_change.call(next);
+                                }
+                                Err(failure) => template_error.set(failure.to_string()),
+                            }
+                        },
+                    }
+                    if template_error().is_empty() {
+                        div { class: "preview",
+                            span { "Vista previa" }
+                            p { "{preview}" }
+                        }
+                    } else {
+                        p { class: "form-error", role: "alert", "{template_error}" }
+                    }
+                }
+            }
+            SettingsGroup { title: "Empresa y cotizaciones",
+                CompanySection { settings: settings.clone(), on_change }
+            }
+            SettingsGroup { title: "Datos",
+                div { class: "setting-row stacked",
+                    div { class: "setting-info",
+                        h3 { "Copia de seguridad" }
+                        p { "{backup_status}" }
+                        p { "Usa un USB o disco externo: una copia en la misma laptop no sirve si esta se daña." }
+                    }
+                    if let Some(folder) = settings.backup_directory() {
+                        p { class: "path", "{folder}" }
+                    }
+                    div { class: "button-row",
+                        button {
+                            class: "secondary",
+                            disabled: busy,
+                            onclick: move |_| on_pick_folder.call(()),
+                            if has_folder { "Cambiar carpeta" } else { "Elegir carpeta" }
+                        }
+                        button {
+                            class: "primary",
+                            disabled: busy || !has_folder,
+                            onclick: move |_| on_backup.call(()),
+                            "Crear copia ahora"
+                        }
+                    }
+                    if !backup_notice.is_empty() {
+                        p { class: "notice", role: "status", "{backup_notice}" }
+                    }
+                }
+                div { class: "setting-row stacked",
+                    div { class: "setting-info",
+                        h3 { "Copia automática" }
+                        p { "Al abrir la aplicación se copia la base si la última copia es más antigua que el intervalo. Solo se borran las copias más viejas de esta aplicación en esa carpeta." }
+                        if !auto_backup_notice.is_empty() {
+                            p { class: "notice", role: "status", "{auto_backup_notice}" }
+                        }
+                        if !automatic_error().is_empty() {
+                            p { class: "form-error", role: "alert", "{automatic_error}" }
+                        }
+                    }
+                    div { class: "button-row",
+                        label { class: "days-field",
+                            input {
+                                class: "days",
+                                r#type: "number",
+                                min: 1,
+                                max: 30,
+                                aria_label: "Días entre copias automáticas",
+                                value: "{interval_text}",
+                                oninput: move |event| {
+                                    interval_text.set(event.value());
+                                    let mut next = interval_settings.clone();
+                                    let result = event
+                                        .value()
+                                        .parse()
+                                        .map_err(|_| "Escribe un número de 1 a 30".to_owned())
+                                        .and_then(|days| {
+                                            next.set_backup_interval_days(days)
+                                                .map_err(|failure| failure.to_string())
+                                        });
+                                    match result {
+                                        Ok(()) => {
+                                            automatic_error.set(String::new());
+                                            on_change.call(next);
+                                        }
+                                        Err(message) => automatic_error.set(message),
+                                    }
+                                },
+                            }
+                            span { class: "days-unit", "días" }
+                        }
+                        label { class: "days-field",
+                            input {
+                                class: "days",
+                                r#type: "number",
+                                min: 1,
+                                max: 90,
+                                aria_label: "Copias que se conservan",
+                                value: "{keep_text}",
+                                oninput: move |event| {
+                                    keep_text.set(event.value());
+                                    let mut next = keep_settings.clone();
+                                    let result = event
+                                        .value()
+                                        .parse()
+                                        .map_err(|_| "Escribe un número de 1 a 90".to_owned())
+                                        .and_then(|copies| {
+                                            next.set_backup_keep(copies)
+                                                .map_err(|failure| failure.to_string())
+                                        });
+                                    match result {
+                                        Ok(()) => {
+                                            automatic_error.set(String::new());
+                                            on_change.call(next);
+                                        }
+                                        Err(message) => automatic_error.set(message),
+                                    }
+                                },
+                            }
+                            span { class: "days-unit", "copias" }
+                        }
+                    }
+                }
+                div { class: "setting-row stacked",
+                    div { class: "setting-info",
+                        h3 { "Restaurar" }
+                        p { "Reemplaza los datos actuales. Antes se guarda una copia de seguridad." }
+                    }
+                    if let Some(path) = &pending_restore {
+                        div { class: "confirm", role: "alertdialog", aria_label: "Confirmar restauración",
+                            p { "Se reemplazarán todos los datos actuales por esta copia:" }
+                            p { class: "path", "{path}" }
+                            div { class: "button-row",
+                                button {
+                                    class: "danger",
+                                    disabled: busy,
+                                    onclick: move |_| on_confirm_restore.call(()),
+                                    "Reemplazar datos actuales"
+                                }
+                                button {
+                                    class: "secondary",
+                                    disabled: busy,
+                                    onclick: move |_| on_cancel_restore.call(()),
+                                    "Cancelar"
+                                }
+                            }
+                        }
+                    } else {
+                        button {
+                            class: "secondary start",
+                            disabled: busy,
+                            onclick: move |_| on_pick_restore.call(()),
+                            "Restaurar una copia"
+                        }
+                    }
+                }
+                details { class: "setting-row",
+                    summary { "Ubicación de la base de datos" }
+                    p { class: "path", "{database}" }
+                }
+            }
+            SettingsGroup { title: "Acerca de",
+                div { class: "setting-row",
+                    div { class: "setting-info",
+                        h3 { "COMINORSA CRM" }
+                        p { "Versión {env!(\"CARGO_PKG_VERSION\")}" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The quote header and the IGV rate. Nothing is prefilled; a blank field is
+/// left out of the quote.
+#[component]
+fn CompanySection(settings: Settings, on_change: EventHandler<Settings>) -> Element {
+    let mut company = use_signal({
+        let company = settings.company().clone();
+        move || company
+    });
+    let mut company_error = use_signal(String::new);
+    let mut igv_text = use_signal({
+        let rate = igv_input(settings.igv_rate());
+        move || rate
+    });
+    let mut igv_error = use_signal(String::new);
+    let igv_settings = settings.clone();
+    let edit = |update: fn(&mut CompanyProfile, String)| {
+        let settings = settings.clone();
+        move |event: FormEvent| {
+            let mut typed = company();
+            update(&mut typed, event.value());
+            company.set(typed.clone());
+            let mut next = settings.clone();
+            match next.set_company(typed) {
+                Ok(()) => {
+                    company_error.set(String::new());
+                    on_change.call(next);
+                }
+                Err(failure) => company_error.set(failure.to_string()),
+            }
+        }
+    };
+
+    rsx! {
+        div { class: "setting-row stacked",
+            div { class: "setting-info",
+                h3 { "Datos para la cotización" }
+                p { "Lo que dejes en blanco no aparece en el documento." }
+            }
+            div { class: "company-fields",
+                label { class: "step-date",
+                    span { "Nombre de la empresa" }
+                    input {
+                        value: "{company.read().name}",
+                        oninput: edit(|values, text| values.name = text),
+                    }
+                }
+                label { class: "step-date",
+                    span { "RUC de la empresa" }
+                    input {
+                        inputmode: "numeric",
+                        maxlength: 11,
+                        value: "{company.read().ruc}",
+                        oninput: edit(|values, text| values.ruc = text),
+                    }
+                }
+                label { class: "step-date",
+                    span { "Dirección" }
+                    input {
+                        value: "{company.read().address}",
+                        oninput: edit(|values, text| values.address = text),
+                    }
+                }
+                label { class: "step-date",
+                    span { "Teléfono de la empresa" }
+                    input {
+                        r#type: "tel",
+                        value: "{company.read().phone}",
+                        oninput: edit(|values, text| values.phone = text),
+                    }
+                }
+                label { class: "step-date",
+                    span { "Correo de la empresa" }
+                    input {
+                        r#type: "email",
+                        value: "{company.read().email}",
+                        oninput: edit(|values, text| values.email = text),
+                    }
+                }
+            }
+            if !company_error().is_empty() {
+                p { class: "form-error", role: "alert", "{company_error}" }
+            }
+        }
+        div { class: "setting-row",
+            div { class: "setting-info",
+                h3 { "IGV" }
+                p { "Por revisar: confirma la tasa con tu contador." }
+                if !igv_error().is_empty() {
+                    p { class: "form-error", role: "alert", "{igv_error}" }
+                }
+            }
+            label { class: "days-field",
+                input {
+                    class: "days",
+                    inputmode: "decimal",
+                    aria_label: "Tasa de IGV en porcentaje",
+                    value: "{igv_text}",
+                    oninput: move |event| {
+                        igv_text.set(event.value());
+                        match IgvRate::parse(&event.value()) {
+                            Ok(rate) => {
+                                let mut next = igv_settings.clone();
+                                next.set_igv_rate(rate);
+                                igv_error.set(String::new());
+                                on_change.call(next);
+                            }
+                            Err(failure) => igv_error.set(failure.to_string()),
+                        }
+                    },
+                }
+                span { class: "days-unit", "%" }
+            }
+        }
+    }
+}
+
+#[component]
+fn SettingsGroup(title: &'static str, children: Element) -> Element {
+    rsx! {
+        section { class: "settings-group",
+            h2 { "{title}" }
+            div { class: "settings-list", {children} }
+        }
+    }
+}

@@ -1,0 +1,2 @@
+// Resource id 32512 is IDI_APPLICATION, the id Dioxus and Explorer look up.
+32512 ICON "icon.ico"
