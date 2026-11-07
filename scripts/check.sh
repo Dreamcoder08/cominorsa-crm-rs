@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Pre-commit gate for the workspace. Usage: scripts/check.sh [--full]
-#   default: fmt, clippy (warnings denied), tests
+#   default: fmt, clippy (warnings denied), tests, CLI end-to-end scenario
 #   --full:  also cargo-deny and a release build size report
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -23,6 +23,9 @@ if command -v cargo-nextest >/dev/null; then
 else
     cargo test --workspace --locked
 fi
+
+step "cli end-to-end"
+scripts/e2e-cli.sh
 
 if $full; then
     step "deny"

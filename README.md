@@ -143,4 +143,4 @@ Measured on Linux with WebKitGTK and an empty database. The memory figure predat
 
 - Never commit customer data, credentials, or real exports. Fixtures are synthetic.
 - Write a failing test before each behavior change.
-- Run `scripts/check.sh` before committing. It runs `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and the workspace tests (with cargo-nextest when installed). `scripts/check.sh --full` also runs `cargo deny check` and reports the release binary size; it exits with status 2 when cargo-deny is missing.
+- Run `scripts/check.sh` before committing. It runs `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, the workspace tests (with cargo-nextest when installed), and `scripts/e2e-cli.sh`, which needs `jq` and fails without it. `scripts/check.sh --full` also runs `cargo deny check` and reports the release binary size; it exits with status 2 when cargo-deny is missing.
