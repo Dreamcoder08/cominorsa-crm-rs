@@ -3,10 +3,11 @@
 
 mod common;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 use std::{
     collections::BTreeMap,
     fs,
-    os::unix::fs::PermissionsExt as _,
     path::{Path, PathBuf},
 };
 
@@ -214,6 +215,9 @@ fn a_missing_folder_is_an_error_and_creates_nothing() {
     }
 }
 
+// Permission bits make a folder unwritable only on Unix; a read-only
+// attribute on a Windows folder does not stop writes inside it.
+#[cfg(unix)]
 #[test]
 fn an_unwritable_folder_is_an_error_and_deletes_nothing() {
     let scratch = Scratch::new();
