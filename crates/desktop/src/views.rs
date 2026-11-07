@@ -1,20 +1,24 @@
 //! Presentational components. State and persistence live in `App`.
 
-use cominorsa_domain::{Lead, Prospect, Stage};
+use cominorsa_domain::{CaseFile, Lead, Prospect, Stage};
 use dioxus::prelude::*;
 use time::Date;
 use uuid::Uuid;
 
 use crate::{
-    AgendaGroups, FollowUp, FormValues, PipelineSummary, format_date, matches_query, owner_options,
-    profile_label, tax_status_class,
+    AgendaGroups, AgendaItem, FollowUp, FormValues, PipelineSummary, format_date, matches_query,
+    owner_options, profile_label, step_status_label, tax_status_class,
 };
+
+/// Every date on a case step is a suggestion, never a legal deadline.
+pub(crate) const STEP_DATE_NOTE: &str = "Fecha sugerida, ajústala";
 
 const SERVICES: [&str; 5] = ["REINFO", "IGAFOM", "DAC", "ESTAMIN", "Plan de minado"];
 
 const BRAND_MARK: &str = include_str!("../assets/brand-mark.uri");
 const ICON_PIPELINE: &str = "M4 4h4v16H4zM10 4h4v10h-4zM16 4h4v13h-4z";
 const ICON_AGENDA: &str = "M4 6h16v14H4zM4 10h16M8 3v5M16 3v5";
+const ICON_CASES: &str = "M3 6h6l2 3h10v11H3z";
 const ICON_PROSPECTS: &str = "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM21 21l-5-5";
 const ICON_SETTINGS: &str = "M4 7h10M18 7h2M4 17h2M10 17h10M14 5h4v4h-4zM6 15h4v4H6z";
 
@@ -22,6 +26,7 @@ const ICON_SETTINGS: &str = "M4 7h10M18 7h2M4 17h2M10 17h10M14 5h4v4h-4zM6 15h4v
 pub enum Section {
     Pipeline,
     Agenda,
+    Cases,
     Prospects,
     Settings,
 }
@@ -38,6 +43,7 @@ pub fn Shell(section: Section, on_section: EventHandler<Section>, children: Elem
                 nav { class: "nav", aria_label: "Secciones",
                     NavItem { target: Section::Pipeline, current: section, label: "Embudo", icon: ICON_PIPELINE, on_section }
                     NavItem { target: Section::Agenda, current: section, label: "Agenda", icon: ICON_AGENDA, on_section }
+                    NavItem { target: Section::Cases, current: section, label: "Expedientes", icon: ICON_CASES, on_section }
                     NavItem { target: Section::Prospects, current: section, label: "Prospectos", icon: ICON_PROSPECTS, on_section }
                 }
                 nav { class: "nav nav-bottom", aria_label: "Preferencias",
@@ -74,11 +80,13 @@ fn NavItem(
 #[component]
 pub fn Agenda(
     leads: Vec<Lead>,
+    #[props(default)] cases: Vec<CaseFile>,
     today: Date,
     #[props(default)] whatsapp_template: String,
     on_open_pipeline: EventHandler<()>,
+    #[props(default)] on_open_case: EventHandler<Uuid>,
 ) -> Element {
-    let groups = AgendaGroups::of(&leads, today);
+    let groups = AgendaGroups::of(&leads, &cases, today);
     let is_empty = groups.is_empty();
 
     rsx! {
@@ -91,13 +99,13 @@ pub fn Agenda(
         if is_empty {
             section { class: "empty",
                 h2 { "Nada pendiente" }
-                p { "No hay seguimientos para los próximos 7 días." }
+                p { "No hay seguimientos ni trámites para los próximos 7 días." }
                 button { class: "primary", onclick: move |_| on_open_pipeline.call(()), "Ver embudo" }
             }
         } else {
-            AgendaGroup { title: "Vencidos", leads: groups.overdue, today, whatsapp_template: whatsapp_template.clone() }
-            AgendaGroup { title: "Hoy", leads: groups.today, today, whatsapp_template: whatsapp_template.clone() }
-            AgendaGroup { title: "Próximos 7 días", leads: groups.upcoming, today, whatsapp_template: whatsapp_template.clone() }
+            AgendaGroup { title: "Vencidos", items: groups.overdue, today, whatsapp_template: whatsapp_template.clone(), on_open_case }
+            AgendaGroup { title: "Hoy", items: groups.today, today, whatsapp_template: whatsapp_template.clone(), on_open_case }
+            AgendaGroup { title: "Próximos 7 días", items: groups.upcoming, today, whatsapp_template: whatsapp_template.clone(), on_open_case }
         }
     }
 }
@@ -105,35 +113,64 @@ pub fn Agenda(
 #[component]
 fn AgendaGroup(
     title: &'static str,
-    leads: Vec<Lead>,
+    items: Vec<AgendaItem>,
     today: Date,
     whatsapp_template: String,
+    on_open_case: EventHandler<Uuid>,
 ) -> Element {
-    if leads.is_empty() {
+    if items.is_empty() {
         return rsx! {};
     }
 
     rsx! {
         section { class: "agenda-group",
-            h2 { "{title} · {leads.len()}" }
+            h2 { "{title} · {items.len()}" }
             div { class: "agenda-list",
-                for lead in leads {
+                for item in items {
                     {
-                        let status = FollowUp::of(&lead, today);
-                        rsx! {
-                            div { class: "agenda-row", key: "{lead.id()}",
-                                div {
-                                    strong { "{lead.name()}" }
-                                    span { class: "detail", "{lead.service()} · {lead.phone()}" }
+                        let kind = item.kind_label();
+                        match item {
+                            AgendaItem::FollowUp(lead) => {
+                                let status = FollowUp::of(&lead, today);
+                                rsx! {
+                                    div { class: "agenda-row", key: "{lead.id()}",
+                                        div {
+                                            span { class: "agenda-kind", "{kind}" }
+                                            strong { "{lead.name()}" }
+                                            span { class: "detail", "{lead.service()} · {lead.phone()}" }
+                                        }
+                                        div { class: "card-actions",
+                                            span { class: "status {status.class()}", "{status.label()}" }
+                                            if let Some(url) = lead.whatsapp_url(&whatsapp_template) {
+                                                a {
+                                                    class: "secondary",
+                                                    href: "{url}",
+                                                    aria_label: "Preparar mensaje de WhatsApp para {lead.name()}",
+                                                    "WhatsApp"
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
-                                div { class: "card-actions",
-                                    span { class: "status {status.class()}", "{status.label()}" }
-                                    if let Some(url) = lead.whatsapp_url(&whatsapp_template) {
-                                        a {
-                                            class: "secondary",
-                                            href: "{url}",
-                                            aria_label: "Preparar mensaje de WhatsApp para {lead.name()}",
-                                            "WhatsApp"
+                            }
+                            AgendaItem::Step { case, step } => {
+                                let status = FollowUp::of_step(&step, today);
+                                let id = case.id();
+                                rsx! {
+                                    div { class: "agenda-row", key: "{step.id()}",
+                                        div {
+                                            span { class: "agenda-kind step", "{kind}" }
+                                            strong { "{case.client_name()}" }
+                                            span { class: "detail", "{step.title()} · Fecha sugerida {format_date(step.due_on())}" }
+                                        }
+                                        div { class: "card-actions",
+                                            span { class: "status {status.class()}", "{step_status_label(&step, today)}" }
+                                            button {
+                                                class: "secondary",
+                                                aria_label: "Ver expediente de {case.client_name()}",
+                                                onclick: move |_| on_open_case.call(id),
+                                                "Ver expediente"
+                                            }
                                         }
                                     }
                                 }

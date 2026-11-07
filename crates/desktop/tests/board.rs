@@ -1,7 +1,7 @@
 use cominorsa_desktop::{
-    Agenda, AgendaGroups, FollowUp, FormValues, LeadForm, PipelineSummary, Prospects, SaveState,
-    Section, SettingsView, Shell, Workspace, format_date, format_timestamp, matches_query,
-    next_follow_up, owner_options, parse_form, profile_label, window_icon,
+    Agenda, AgendaGroups, AgendaItem, FollowUp, FormValues, LeadForm, PipelineSummary, Prospects,
+    SaveState, Section, SettingsView, Shell, Workspace, format_date, format_timestamp,
+    matches_query, next_follow_up, owner_options, parse_form, profile_label, window_icon,
 };
 use cominorsa_domain::{
     Lead, NewLead, Prospect, ProspectKind, Settings, TaxRecord, ThemePreference,
@@ -394,6 +394,7 @@ fn shows_every_section_and_marks_the_current_one() {
     for label in [
         "Embudo",
         "Agenda",
+        "Expedientes",
         "Prospectos",
         "Configuración",
         "Contenido",
@@ -555,11 +556,11 @@ fn groups_the_agenda_by_urgency() {
         sample("Cerrada", date!(2026 - 11 - 01), 3),
     ];
 
-    let groups = AgendaGroups::of(&leads, TODAY);
-    let names = |group: &[Lead]| {
+    let groups = AgendaGroups::of(&leads, &[], TODAY);
+    let names = |group: &[AgendaItem]| {
         group
             .iter()
-            .map(|lead| lead.name().to_owned())
+            .map(|item| item.name().to_owned())
             .collect::<Vec<_>>()
     };
 

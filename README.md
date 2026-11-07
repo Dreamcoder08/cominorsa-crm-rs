@@ -1,6 +1,6 @@
 # COMINORSA CRM
 
-Local desktop CRM written in Rust. It registers leads, moves them through the sales pipeline, searches them, shows a follow-up agenda, and keeps a searchable prospect list that converts into leads. Lead cards open a prepared WhatsApp chat that a person reviews and sends. Each lead can have a responsible person from the team list. Settings cover the theme, team, default follow-up days, the WhatsApp message with a preview, and backup and restore. Valid changes save automatically and report their state.
+Local desktop CRM written in Rust. It registers leads, moves them through the sales pipeline, searches them, shows an agenda of follow-ups and case steps, and keeps a searchable prospect list that converts into leads. Advancing a lead to "Contrato firmado" opens one case in "Expedientes", with procedure steps you mark done and date. Each step date is a suggestion to adjust, labeled "Fecha sugerida, ajústala". Lead cards open a prepared WhatsApp chat that a person reviews and sends. Each lead can have a responsible person from the team list. Settings cover the theme, team, default follow-up days, the WhatsApp message with a preview, and backup and restore. Valid changes save automatically and report their state.
 
 ## Quick path
 
@@ -60,12 +60,13 @@ The file comes from the public reduced RUC roll, which has no phone or email. Ap
 | `crates/importer` | `cominorsa-import` CLI for prospect CSV files | `domain`, `storage` |
 | `crates/desktop` | Dioxus desktop UI and startup | `domain`, `storage` |
 
-Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adapter can reuse `domain` and replace SQLite behind `LeadRepository`.
+Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adapter can reuse `domain` and replace SQLite behind `LeadRepository` and `CaseRepository`.
 
 ## Current limits
 
 | Topic | Status |
 |---|---|
+| Leads signed before cases existed | No case is created for them; only "Avanzar" opens one |
 | RUC validation | Offline format and check digit only; it does not prove the RUC exists at SUNAT |
 | Pipeline stages and lead fields | Assumptions pending client validation |
 | Case steps | Titles and day offsets are planning suggestions pending client validation; legal deadlines are never stored in code |

@@ -1,6 +1,6 @@
 //! Display rules, kept free of UI framework types so they stay testable.
 
-use cominorsa_domain::{Lead, Stage};
+use cominorsa_domain::{Case, CaseFile, CaseStatus, CaseStep, Lead, Stage};
 use time::{Date, Duration, OffsetDateTime, macros::offset};
 
 const AGENDA_DAYS: i64 = 7;
@@ -15,11 +15,23 @@ pub enum FollowUp {
 
 impl FollowUp {
     pub fn of(lead: &Lead, today: Date) -> Self {
-        let date = lead.follow_up_on();
-
         if lead.stage() == Stage::ContractSigned {
             Self::Closed
-        } else if date < today {
+        } else {
+            Self::on(lead.follow_up_on(), today)
+        }
+    }
+
+    pub fn of_step(step: &CaseStep, today: Date) -> Self {
+        if step.is_done() {
+            Self::Closed
+        } else {
+            Self::on(step.due_on(), today)
+        }
+    }
+
+    fn on(date: Date, today: Date) -> Self {
+        if date < today {
             Self::Overdue((today - date).whole_days())
         } else if date == today {
             Self::DueToday
@@ -108,33 +120,108 @@ pub fn next_follow_up(today: Date, days: u32) -> Date {
     today + Duration::days(i64::from(days))
 }
 
-/// Leads that need attention, in the order the repository returned them.
+/// A commercial follow-up or a pending case step.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgendaItem {
+    FollowUp(Lead),
+    Step { case: Case, step: CaseStep },
+}
+
+impl AgendaItem {
+    pub fn kind_label(&self) -> &'static str {
+        match self {
+            Self::FollowUp(_) => "Seguimiento",
+            Self::Step { .. } => "Trámite",
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            Self::FollowUp(lead) => lead.name(),
+            Self::Step { case, .. } => case.client_name(),
+        }
+    }
+
+    fn date(&self) -> Date {
+        match self {
+            Self::FollowUp(lead) => lead.follow_up_on(),
+            Self::Step { step, .. } => step.due_on(),
+        }
+    }
+}
+
+/// Follow-ups and open case steps that need attention, oldest date first.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgendaGroups {
-    pub overdue: Vec<Lead>,
-    pub today: Vec<Lead>,
-    pub upcoming: Vec<Lead>,
+    pub overdue: Vec<AgendaItem>,
+    pub today: Vec<AgendaItem>,
+    pub upcoming: Vec<AgendaItem>,
 }
 
 impl AgendaGroups {
-    pub fn of(leads: &[Lead], today: Date) -> Self {
-        let horizon = today + Duration::days(AGENDA_DAYS);
+    pub fn of(leads: &[Lead], cases: &[CaseFile], today: Date) -> Self {
         let mut groups = Self::default();
 
         for lead in leads {
-            match FollowUp::of(lead, today) {
-                FollowUp::Overdue(_) => groups.overdue.push(lead.clone()),
-                FollowUp::DueToday => groups.today.push(lead.clone()),
-                FollowUp::Upcoming(date) if date <= horizon => groups.upcoming.push(lead.clone()),
-                FollowUp::Upcoming(_) | FollowUp::Closed => {}
+            groups.place(
+                FollowUp::of(lead, today),
+                AgendaItem::FollowUp(lead.clone()),
+                today,
+            );
+        }
+        for file in cases
+            .iter()
+            .filter(|file| file.case.status() == CaseStatus::Open)
+        {
+            for step in &file.steps {
+                groups.place(
+                    FollowUp::of_step(step, today),
+                    AgendaItem::Step {
+                        case: file.case.clone(),
+                        step: step.clone(),
+                    },
+                    today,
+                );
             }
         }
+        for group in [&mut groups.overdue, &mut groups.today, &mut groups.upcoming] {
+            group.sort_by_key(AgendaItem::date);
+        }
         groups
+    }
+
+    fn place(&mut self, status: FollowUp, item: AgendaItem, today: Date) {
+        let horizon = today + Duration::days(AGENDA_DAYS);
+
+        match status {
+            FollowUp::Overdue(_) => self.overdue.push(item),
+            FollowUp::DueToday => self.today.push(item),
+            FollowUp::Upcoming(date) if date <= horizon => self.upcoming.push(item),
+            FollowUp::Upcoming(_) | FollowUp::Closed => {}
+        }
     }
 
     pub fn is_empty(&self) -> bool {
         self.overdue.is_empty() && self.today.is_empty() && self.upcoming.is_empty()
     }
+}
+
+pub fn step_status_label(step: &CaseStep, today: Date) -> String {
+    match (step.done_on(), FollowUp::of_step(step, today)) {
+        (Some(date), _) => format!("Hecho el {}", format_date(date)),
+        (None, FollowUp::Upcoming(_)) => "Próximo".to_owned(),
+        (None, status) => status.label(),
+    }
+}
+
+pub fn case_progress(file: &CaseFile) -> String {
+    let done = file.steps.iter().filter(|step| step.is_done()).count();
+
+    format!("{done} de {} pasos", file.steps.len())
+}
+
+pub fn responsible_label(owner: Option<&str>) -> &str {
+    owner.unwrap_or("Sin responsable")
 }
 
 /// Formats Unix seconds in Peru time, which has no daylight saving.

@@ -2,12 +2,14 @@
 
 use std::{env, fs, path::PathBuf};
 
+mod cases_view;
 mod presentation;
 mod settings_view;
 mod views;
 
 use cominorsa_domain::{
-    Lead, LeadRepository, NewLead, Prospect, ProspectRepository, Settings, SettingsRepository,
+    CaseFile, CaseRepository, CaseStep, Lead, LeadRepository, NewLead, Prospect,
+    ProspectRepository, Settings, SettingsRepository, Stage, procedure_template,
 };
 use cominorsa_storage::SqliteLeads;
 use dioxus::{
@@ -22,9 +24,11 @@ use time::{
 };
 use uuid::Uuid;
 
+pub use cases_view::{CaseDetail, Cases};
 pub use presentation::{
-    AgendaGroups, FollowUp, PipelineSummary, format_date, format_timestamp, matches_query,
-    next_follow_up, owner_options, profile_label, tax_status_class,
+    AgendaGroups, AgendaItem, FollowUp, PipelineSummary, case_progress, format_date,
+    format_timestamp, matches_query, next_follow_up, owner_options, profile_label,
+    responsible_label, step_status_label, tax_status_class,
 };
 pub use settings_view::{SaveState, SettingsView};
 pub use views::{Agenda, LeadForm, Prospects, Section, Shell, Workspace};
@@ -92,6 +96,35 @@ pub fn parse_form(values: FormValues) -> Result<Lead, String> {
         follow_up_on,
     })
     .map_err(|error| error.to_string())
+}
+
+pub fn parse_step_date(value: &str) -> Result<Date, String> {
+    Date::parse(value, &Iso8601::DATE).map_err(|_| "Ingresa la fecha del paso".to_owned())
+}
+
+/// Saves one pipeline move. Reaching the final stage opens the case in the same
+/// atomic operation, with suggested step dates counted from `today`.
+pub async fn save_advance<R>(repository: &R, mut lead: Lead, today: Date) -> Result<(), String>
+where
+    R: LeadRepository + CaseRepository,
+{
+    lead.advance().map_err(|error| error.to_string())?;
+
+    if lead.stage() != Stage::ContractSigned {
+        return repository
+            .save(&lead)
+            .await
+            .map_err(|error| error.to_string());
+    }
+
+    let template = procedure_template(lead.service());
+    let opening = CaseFile::open(&lead, today, &template).map_err(|error| error.to_string())?;
+
+    repository
+        .sign_and_open(&lead, &opening)
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 pub fn window_icon() -> Result<Icon, String> {
@@ -172,6 +205,9 @@ async fn open_store() -> Result<SqliteLeads, String> {
 pub fn App() -> Element {
     let mut store = use_signal(|| None::<SqliteLeads>);
     let mut leads = use_signal(Vec::<Lead>::new);
+    let mut cases = use_signal(Vec::<CaseFile>::new);
+    let mut selected_case = use_signal(|| None::<Uuid>);
+    let mut action_error = use_signal(String::new);
     let mut startup_error = use_signal(|| None::<String>);
     let mut form_error = use_signal(String::new);
     let mut settings = use_signal(|| try_consume_context::<Settings>().unwrap_or_default());
@@ -209,14 +245,19 @@ pub fn App() -> Element {
         let loaded = async {
             let opened = open_store().await?;
             let list = opened.list().await.map_err(|error| error.to_string())?;
+            let open = opened
+                .open_cases()
+                .await
+                .map_err(|error| error.to_string())?;
             let saved = opened.load().await.map_err(|error| error.to_string())?;
-            Ok::<_, String>((opened, list, saved))
+            Ok::<_, String>((opened, list, open, saved))
         };
 
         match loaded.await {
-            Ok((opened, list, saved)) => {
+            Ok((opened, list, open, saved)) => {
                 store.set(Some(opened));
                 leads.set(list);
+                cases.set(open);
                 settings.set(saved);
                 form.set(new_form());
             }
@@ -252,6 +293,60 @@ pub fn App() -> Element {
         });
     };
 
+    let mut advance = move |lead: Lead| {
+        let Some(repository) = store.read().clone() else {
+            action_error.set("La base de datos todavía no está lista".to_owned());
+            return;
+        };
+
+        saving.set(true);
+        spawn(async move {
+            let saved = async {
+                save_advance(&repository, lead, today_in_peru()).await?;
+                let list = repository.list().await.map_err(|error| error.to_string())?;
+                let open = repository
+                    .open_cases()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok::<_, String>((list, open))
+            };
+
+            match saved.await {
+                Ok((list, open)) => {
+                    leads.set(list);
+                    cases.set(open);
+                    action_error.set(String::new());
+                }
+                Err(failure) => action_error.set(failure),
+            }
+            saving.set(false);
+        });
+    };
+
+    let mut save_step = move |step: CaseStep| {
+        let Some(repository) = store.read().clone() else {
+            action_error.set("La base de datos todavía no está lista".to_owned());
+            return;
+        };
+
+        saving.set(true);
+        spawn(async move {
+            let saved = async {
+                repository.save_step(&step).await?;
+                repository.open_cases().await
+            };
+
+            match saved.await {
+                Ok(open) => {
+                    cases.set(open);
+                    action_error.set(String::new());
+                }
+                Err(failure) => action_error.set(failure.to_string()),
+            }
+            saving.set(false);
+        });
+    };
+
     let mut save_settings = move |next: Settings| {
         settings.set(next.clone());
         let Some(repository) = store.read().clone() else {
@@ -277,7 +372,11 @@ pub fn App() -> Element {
         }
         Shell {
             section: section(),
-            on_section: move |next| section.set(next),
+            on_section: move |next| {
+                section.set(next);
+                selected_case.set(None);
+                action_error.set(String::new());
+            },
             if section() == Section::Settings {
                 SettingsView {
                     key: "{settings_generation}",
@@ -349,14 +448,17 @@ pub fn App() -> Element {
                             let restored = async {
                                 let reopened = restore_backup(repository, backup).await?;
                                 let list = reopened.list().await.map_err(|error| error.to_string())?;
+                                let open = reopened.open_cases().await.map_err(|error| error.to_string())?;
                                 let saved = reopened.load().await.map_err(|error| error.to_string())?;
-                                Ok::<_, String>((reopened, list, saved))
+                                Ok::<_, String>((reopened, list, open, saved))
                             };
 
                             match restored.await {
-                                Ok((reopened, list, saved)) => {
+                                Ok((reopened, list, open, saved)) => {
                                     store.set(Some(reopened));
                                     leads.set(list);
+                                    cases.set(open);
+                                    selected_case.set(None);
                                     settings.set(saved);
                                     settings_generation += 1;
                                     backup_notice.set("Copia restaurada".to_owned());
@@ -372,11 +474,62 @@ pub fn App() -> Element {
             } else if section() == Section::Agenda {
                 Agenda {
                     leads: leads(),
+                    cases: cases(),
                     today: today_in_peru(),
                     whatsapp_template: settings.read().whatsapp_template().to_owned(),
                     on_open_pipeline: move |_| section.set(Section::Pipeline),
+                    on_open_case: move |id: Uuid| {
+                        selected_case.set(Some(id));
+                        section.set(Section::Cases);
+                    },
+                }
+            } else if section() == Section::Cases {
+                if let Some(file) = selected_case().and_then(|id| {
+                    cases.read().iter().find(|file| file.case.id() == id).cloned()
+                }) {
+                    CaseDetail {
+                        file,
+                        today: today_in_peru(),
+                        saving: saving(),
+                        error: action_error(),
+                        on_back: move |_| {
+                            selected_case.set(None);
+                            action_error.set(String::new());
+                        },
+                        on_toggle: move |mut step: CaseStep| {
+                            if saving() {
+                                return;
+                            }
+                            if step.is_done() {
+                                step.mark_undone();
+                            } else {
+                                step.mark_done(today_in_peru());
+                            }
+                            save_step(step);
+                        },
+                        on_due_date: move |(mut step, value): (CaseStep, String)| {
+                            if saving() {
+                                return;
+                            }
+                            match parse_step_date(&value) {
+                                Ok(date) => {
+                                    step.reschedule(date);
+                                    save_step(step);
+                                }
+                                Err(message) => action_error.set(message),
+                            }
+                        },
+                    }
+                } else {
+                    Cases {
+                        cases: cases(),
+                        on_open: move |id: Uuid| selected_case.set(Some(id)),
+                    }
                 }
             } else if section() == Section::Pipeline {
+                if !action_error().is_empty() {
+                    p { class: "form-error", role: "alert", "{action_error}" }
+                }
                 Workspace {
                     leads: leads(),
                     today: today_in_peru(),
@@ -402,12 +555,10 @@ pub fn App() -> Element {
                         if saving() {
                             return;
                         }
-                        let Some(mut lead) = leads.read().iter().find(|lead| lead.id() == id).cloned() else {
+                        let Some(lead) = leads.read().iter().find(|lead| lead.id() == id).cloned() else {
                             return;
                         };
-                        if lead.advance().is_ok() {
-                            persist(lead, false);
-                        }
+                        advance(lead);
                     },
                 }
             } else {
