@@ -42,6 +42,18 @@ impl CaseStatus {
 pub struct TemplateStep {
     pub title: &'static str,
     pub offset_days: i64,
+    /// Procedure name, set only when several procedures combine.
+    pub procedure: Option<&'static str>,
+}
+
+impl TemplateStep {
+    /// The procedure name keeps two filings with the same title apart.
+    pub fn label(&self) -> String {
+        match self.procedure {
+            Some(procedure) => format!("{procedure}: {}", self.title),
+            None => self.title.to_owned(),
+        }
+    }
 }
 
 /// The procedure a service needs, possibly combining several templates.
@@ -61,8 +73,18 @@ struct KnownTemplate {
     renewal_months: Option<u8>,
 }
 
+impl ProcedureTemplate {
+    pub fn step_titles(&self) -> Vec<String> {
+        self.steps.iter().map(TemplateStep::label).collect()
+    }
+}
+
 const fn step(title: &'static str, offset_days: i64) -> TemplateStep {
-    TemplateStep { title, offset_days }
+    TemplateStep {
+        title,
+        offset_days,
+        procedure: None,
+    }
 }
 
 const GENERIC: KnownTemplate = KnownTemplate {
@@ -138,8 +160,9 @@ const TEMPLATES: [KnownTemplate; 5] = [
 ];
 
 /// Combines every template named in the free-text service, in the order of
-/// the text and without repeating a step title. Words match whole, so
-/// "Redacción" never reads as "DAC". Unknown services get the generic one.
+/// the text, ordered by suggested date. Each procedure keeps all its steps, so
+/// separate filings never merge. Words match whole, so "Redacción" never reads
+/// as "DAC". Unknown services get the generic one.
 pub fn procedure_template(service: &str) -> ProcedureTemplate {
     let service = service.to_lowercase();
     let words: Vec<&str> = service
@@ -163,12 +186,17 @@ pub fn procedure_template(service: &str) -> ProcedureTemplate {
         templates.push(GENERIC);
     }
 
-    let mut steps: Vec<TemplateStep> = Vec::new();
-    for planned in templates.iter().flat_map(|template| template.steps) {
-        if !steps.iter().any(|step| step.title == planned.title) {
-            steps.push(*planned);
-        }
-    }
+    let is_combined = templates.len() > 1;
+    let mut steps: Vec<TemplateStep> = templates
+        .iter()
+        .flat_map(|template| {
+            template.steps.iter().map(|planned| TemplateStep {
+                procedure: is_combined.then_some(template.name),
+                ..*planned
+            })
+        })
+        .collect();
+    steps.sort_by_key(|step| step.offset_days);
 
     ProcedureTemplate {
         name: templates
@@ -411,7 +439,7 @@ impl CaseFile {
                 id: Uuid::now_v7(),
                 case_id: case.id,
                 position,
-                title: planned.title.to_owned(),
+                title: planned.label(),
                 due_on: signed_on + Duration::days(planned.offset_days),
                 done_on: None,
             })

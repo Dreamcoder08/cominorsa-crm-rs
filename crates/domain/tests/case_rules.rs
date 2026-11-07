@@ -125,8 +125,10 @@ fn combines_every_named_service_in_the_order_of_the_text() {
     let reinfo = procedure_template("REINFO");
 
     assert_eq!(template.name, "IGAFOM + REINFO");
-    assert_eq!(template.steps[..igafom.steps.len()], igafom.steps[..]);
-    assert_eq!(template.steps[igafom.steps.len()..], reinfo.steps[1..]);
+    assert_eq!(
+        template.steps.len(),
+        igafom.steps.len() + reinfo.steps.len()
+    );
     assert_eq!(
         procedure_template("reinfo y plan de minado").name,
         "REINFO + Plan de minado"
@@ -134,18 +136,36 @@ fn combines_every_named_service_in_the_order_of_the_text() {
 }
 
 #[test]
-fn never_repeats_an_identical_step_title_when_combining() {
-    let template = procedure_template("IGAFOM, REINFO y DAC");
-    let mut titles: Vec<&str> = template.steps.iter().map(|step| step.title).collect();
-    let total = titles.len();
+fn keeps_each_filing_when_combining_procedures() {
+    for service in ["DAC + ESTAMIN", "ESTAMIN + DAC"] {
+        let labels = procedure_template(service).step_titles();
 
-    titles.sort_unstable();
-    titles.dedup();
+        assert!(labels.contains(&"DAC: Presentar la declaración".to_owned()));
+        assert!(labels.contains(&"ESTAMIN: Presentar la declaración".to_owned()));
+    }
+}
 
-    assert_eq!(titles.len(), total);
-    assert_eq!(
-        procedure_template("DAC y DAC").steps,
-        procedure_template("DAC").steps
+#[test]
+fn orders_combined_steps_by_their_suggested_date() {
+    let offsets: Vec<i64> = procedure_template("ESTAMIN + DAC")
+        .steps
+        .iter()
+        .map(|step| step.offset_days)
+        .collect();
+    let mut sorted = offsets.clone();
+    sorted.sort_unstable();
+
+    assert_eq!(offsets, sorted);
+}
+
+#[test]
+fn keeps_plain_titles_for_a_single_procedure() {
+    let template = procedure_template("DAC");
+
+    assert!(
+        template
+            .step_titles()
+            .contains(&"Presentar la declaración".to_owned())
     );
 }
 
@@ -162,13 +182,18 @@ fn a_combined_case_opens_one_step_per_combined_entry() {
 
     let opened = CaseFile::open(&signed, SIGNED_ON, &template).unwrap();
 
-    assert_eq!(opened.steps.len(), 8);
-    assert_eq!(
-        opened.steps[5].title(),
-        "Revisar la situación en el registro"
+    assert_eq!(opened.steps.len(), template.steps.len());
+    assert!(
+        opened.steps[0].title().starts_with("IGAFOM: ")
+            || opened.steps[0].title().starts_with("REINFO: ")
     );
-    assert_eq!(opened.steps[5].position(), 6);
-    assert_eq!(opened.steps[5].due_on(), SIGNED_ON + Duration::days(7));
+    assert_eq!(opened.steps[0].position(), 1);
+    assert!(
+        opened
+            .steps
+            .windows(2)
+            .all(|pair| pair[0].due_on() <= pair[1].due_on())
+    );
 }
 
 #[test]
