@@ -46,6 +46,10 @@ pub enum DomainError {
     NoConsent,
     #[error("Ese teléfono no sirve para abrir un chat")]
     NoWhatsappNumber,
+    #[error("El intervalo de copias debe estar entre 1 y 30 días")]
+    InvalidBackupInterval,
+    #[error("Conserva entre 1 y 90 copias")]
+    InvalidBackupKeep,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

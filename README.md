@@ -46,7 +46,7 @@ scripts/e2e-cli.sh
 | `billing` | `total`, `plan`, `add`, `edit`, `pay`, `unpay`, `delete` |
 | `quote` | `create`, `edit`, `list`, `show`, `preview`, `send`, `accept`, `reject`, `version`, `pdf` |
 | `settings` | `show`, `set`, `whatsapp-preview` |
-| `backup` | `create`, `restore` |
+| `backup` | `create`, `auto`, `restore` |
 
 The database path is mandatory, through `--db` or `COMINORSA_DB_PATH`; the CLI has no default location, so it cannot reach the app's real data by accident.
 
@@ -81,11 +81,11 @@ Output is Spanish for people. With `--json`, stdout holds one document on succes
 | Exit | Error codes |
 |---|---|
 | 1 | Records: `lead_not_found`, `case_not_found`, `case_not_active`, `step_not_found`, `milestone_not_found`, `quote_not_found`, `prospect_not_found`, `prospect_ambiguous`, `member_not_found` |
-| 1 | Values: `missing_field`, `invalid_ruc`, `invalid_date`, `invalid_amount`, `invalid_quantity`, `invalid_igv_rate`, `invalid_follow_up_days`, `invalid_quote_validity`, `invalid_theme`, `invalid_kind`, `unknown_placeholder`, `empty_quote`, `no_whatsapp_number`, `invalid_origin` |
+| 1 | Values: `missing_field`, `invalid_ruc`, `invalid_date`, `invalid_amount`, `invalid_quantity`, `invalid_igv_rate`, `invalid_follow_up_days`, `invalid_quote_validity`, `invalid_theme`, `invalid_kind`, `unknown_placeholder`, `empty_quote`, `no_whatsapp_number`, `invalid_origin`, `invalid_backup_interval`, `invalid_backup_keep` |
 | 1 | Rules: `final_stage`, `contract_not_signed`, `owner_not_in_team`, `duplicate_member`, `missing_contract_total`, `milestones_already_planned`, `quote_locked`, `quote_superseded`, `invalid_quote_transition`, `company_name_missing`, `backup_folder_missing`, `id_seed_reused`, `no_consent` |
 | 1 | Files: `database_exists`, `import_invalid`, `import_unreadable`, `pdf_failed`, `pdf_target_exists`, `pdf_target_is_database` |
 | 2 | `usage`, `missing_database` |
-| 3 | `database_missing`, `schema_outdated`, `schema_newer`, `migration_failed`, `storage_error`, `corrupt_record`, `backup_folder_unavailable`, `pdf_write_failed`, `runtime_error` |
+| 3 | `database_missing`, `schema_outdated`, `schema_newer`, `migration_failed`, `storage_error`, `corrupt_record`, `backup_folder_unavailable`, `backup_prune_failed`, `pdf_write_failed`, `runtime_error` |
 
 JSON keys and error codes are stable and in English. Dates are ISO 8601, money is integer cents, and enums use their stored codes. Quotes accept their number, such as `COT-2026-0001-V2`, or their id.
 
@@ -104,6 +104,10 @@ Each lead records its origin and its last consent decision: given or revoked, wi
 `lead consent <id> --source <text>` records consent dated that day, and `lead revoke-consent <id> --source <text>` withdraws current consent; revoking a lead without current consent answers `no_consent`. `lead whatsapp` answers `no_consent` unless the last decision is a given consent, and the app hides the chat link the same way. Legal review of these rules is pending.
 
 Leads stored before schema 9 get origin `other` and no consent when the database is upgraded, so the app and `lead whatsapp` stop offering their chat until someone records consent for each one.
+
+## Automatic backups
+
+`settings set --backup-interval-days` takes 1 to 30 days, 1 by default, and `--backup-keep` takes 1 to 90 copies, 14 by default. `backup auto` makes a copy only when a backup folder is set and the last backup, manual or automatic, is older than the interval. After a copy it deletes the oldest copies beyond the kept count, and only files in that folder named exactly like this app's copies, such as `crm-20260302-120000.db`; it never deletes anything else and never creates the folder. `--dry-run` reports the copy and the deletions it would make, opening the database read-only. A missing folder answers `backup_folder_unavailable` and an unwritable one an error, and neither deletes anything. JSON has `status` (`not_configured`, `not_due`, `created`, or `would_create`), `dry_run`, `folder`, `path`, `pruned`, and `next_due_at`, after which the last backup counts as old.
 
 ## App icon
 
@@ -168,7 +172,7 @@ Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adap
 | Leads from the website or WhatsApp | Registered manually with their origin; there is no automatic intake |
 | Consent | Recorded by people, with no proof attached; rules pending legal review. Older leads have none until it is recorded |
 | Prospects | Concession titleholders without phone, RUC, or email; potential service is inferred, not verified |
-| Backups | Manual to a user-chosen folder, automatic before an import, and verified restore from Settings; no scheduled backup yet |
+| Backups | Manual to a user-chosen folder, automatic before an import, `backup auto` when the interval passed, and verified restore from Settings. Nothing runs on a timer |
 | Disk encryption | Not provided by the app; enable it on the laptop |
 | Rollback-journal databases | Every write opens in WAL mode, so a rejected write on a database in the rollback journal keeps its rows but changes two header bytes. `init`, an upgrade, and a restore all leave WAL, so this needs a file altered outside the app |
 | Hard links on Windows | Stable Rust has no file index there, so a PDF target is matched to the database by size, creation, and modification time; another file matching all three is refused too |

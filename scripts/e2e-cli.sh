@@ -476,6 +476,79 @@ expect "export keeps the revocation" "$revoked" \
     "$(cli export | jq -cS --arg id "$referred" '.leads[] | select(.id == $id) | .consent')"
 db=crm.db
 
+echo "== automatic backups copy when due and prune only their own files"
+db=auto.db
+"$binary" --db "$db" --json init >/dev/null
+now=1772470800
+auto_at() {
+    local at="$1"
+    shift
+    "$binary" --db "$db" --json --today "$day" --now "$at" backup auto "$@" | jq -c '.data'
+}
+# Every entry of the folder with a short hash, so any write or delete shows.
+listing() {
+    (cd auto-copias && find . -mindepth 1 | sort | while read -r entry; do
+        if [[ -f "$entry" ]]; then
+            echo "$entry $(sha256sum <"$entry" | cut -c1-16)"
+        else
+            echo "$entry dir"
+        fi
+    done)
+}
+expect "no folder means no copy" not_configured "$(auto_at "$now" | jq -r '.status')"
+expect "settings default interval" 1 "$(cli settings show | jq '.backup_interval_days')"
+expect "settings default kept copies" 14 "$(cli settings show | jq '.backup_keep')"
+refused 1 invalid_backup_interval settings set --backup-interval-days 0
+refused 1 invalid_backup_interval settings set --backup-interval-days 31
+refused 1 invalid_backup_keep settings set --backup-keep 0
+refused 1 invalid_backup_keep settings set --backup-keep 91
+cli settings set --backup-directory carpeta-ausente >/dev/null
+refused 3 backup_folder_unavailable backup auto
+refused 3 backup_folder_unavailable backup auto --dry-run
+[[ ! -e carpeta-ausente ]] || fail "a missing backup folder was created"
+mkdir -p auto-copias/crm-20240101-090000.db
+for name in crm-20260101-090000.db crm-20260201-090000.db notas.txt crm-viejo.db \
+    crm-20250101-090000.db.bak otro-20250101-090000.db crm-2025010-090000.db; do
+    echo "$name" >"auto-copias/$name"
+done
+cli settings set --backup-directory auto-copias --backup-keep 2 --backup-interval-days 1 >/dev/null
+expect "settings keep the interval" 1 "$(cli export | jq '.settings.backup_interval_days')"
+expect "settings keep the count" 2 "$(cli export | jq '.settings.backup_keep')"
+files_before="$(listing)"
+database_hash="$(file_hash "$db")"
+dry="$(auto_at "$now" --dry-run)"
+expect "dry run status" would_create "$(jq -r '.status' <<<"$dry")"
+expect "dry run copy" auto-copias/crm-20260302-120000.db "$(jq -r '.path' <<<"$dry")"
+expect "dry run pruning" '["auto-copias/crm-20260101-090000.db"]' "$(jq -c '.pruned' <<<"$dry")"
+expect "a dry run writes no file" "$files_before" "$(listing)"
+expect "a dry run leaves the database" "$database_hash" "$(file_hash "$db")"
+created="$(auto_at "$now")"
+expect "a due copy is created" created "$(jq -r '.status' <<<"$created")"
+[[ -f auto-copias/crm-20260302-120000.db ]] || fail "the automatic copy does not exist"
+expect "the oldest own copy is pruned" '["auto-copias/crm-20260101-090000.db"]' "$(jq -c '.pruned' <<<"$created")"
+expect "unrelated files stay byte-identical" \
+    "$(grep -v 'crm-20260101-090000.db ' <<<"$files_before")" \
+    "$(listing | grep -v 'crm-20260302-120000.db ')"
+expect "the copy records the time" "$now" "$(cli export | jq '.settings.last_backup_at')"
+files_before="$(listing)"
+expect "no copy inside the interval" not_due "$(auto_at $((now + 86400)) | jq -r '.status')"
+expect "a skipped copy writes nothing" "$files_before" "$(listing)"
+later="$(auto_at $((now + 86401)))"
+expect "a copy once the interval passed" created "$(jq -r '.status' <<<"$later")"
+expect "pruning keeps the newest two" '["auto-copias/crm-20260201-090000.db"]' "$(jq -c '.pruned' <<<"$later")"
+expect "own copies left" 2 "$(find auto-copias -maxdepth 1 -type f -name 'crm-????????-??????.db' | wc -l)"
+files_before="$(listing)"
+state_before="$(state_hash)"
+chmod 555 auto-copias
+status=0
+"$binary" --db "$db" --json --today "$day" --now $((now + 3 * 86400)) backup auto >auto.out 2>auto.err || status=$?
+chmod 755 auto-copias
+expect "an unwritable folder fails" 3 "$status"
+expect "stdout of an unwritable folder" "" "$(cat auto.out)"
+expect "an unwritable folder deletes nothing" "$files_before" "$(listing)"
+expect "state after an unwritable folder" "$state_before" "$(state_hash)"
+db=crm.db
+
 echo "== an older schema is reported, never migrated by a read"
 cp "$root/first/crm.db" old.db
 sqlite3 old.db "PRAGMA journal_mode = DELETE;

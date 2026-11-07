@@ -92,6 +92,8 @@ impl From<DomainError> for AppError {
             DomainError::InvalidQuoteTransition => "invalid_quote_transition",
             DomainError::NoConsent => "no_consent",
             DomainError::NoWhatsappNumber => "no_whatsapp_number",
+            DomainError::InvalidBackupInterval => "invalid_backup_interval",
+            DomainError::InvalidBackupKeep => "invalid_backup_keep",
         };
 
         Self::rejected(code, error.to_string())

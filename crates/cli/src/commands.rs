@@ -13,16 +13,17 @@ use crate::{
     views,
 };
 use cominorsa_application::{
-    AppError, BillingEdit, Clock, Context, FollowUp, FormValues, Ids, MilestoneFields,
-    MilestoneValues, PdfTarget, PipelineSummary, ProspectConversion, QuoteEdit, QuoteFields,
-    QuoteValues, SettingsChange, add_lead, advance_lead, agenda, apply_billing, assign_lead,
-    close_case, close_warning, closing_notice, convert_prospect, create_database, create_quote,
-    default_follow_up, edit_milestone, edit_quote, find_case, find_lead, find_milestone,
-    find_quote, find_stored_case, format_soles, lead_quotes, migrate_database,
-    milestone_gap_warning, open_for_reading, open_for_writing, parse_prospect_kind, preview_quote,
-    record_consent, reschedule_step, restore_backup, revoke_consent, run_backup, save_quote_edit,
-    save_quote_pdf, search_leads, send_quote, set_paid, set_step_done, snapshot, status,
-    suggested_total_note, update_settings, whatsapp_link, whatsapp_preview,
+    AppError, AutoBackupStatus, BillingEdit, Clock, Context, FollowUp, FormValues, Ids,
+    MilestoneFields, MilestoneValues, PdfTarget, PipelineSummary, ProspectConversion, QuoteEdit,
+    QuoteFields, QuoteValues, SettingsChange, add_lead, advance_lead, agenda, apply_billing,
+    assign_lead, auto_backup, close_case, close_warning, closing_notice, convert_prospect,
+    create_database, create_quote, default_follow_up, edit_milestone, edit_quote, find_case,
+    find_lead, find_milestone, find_quote, find_stored_case, format_soles, lead_quotes,
+    migrate_database, milestone_gap_warning, open_for_reading, open_for_writing,
+    parse_prospect_kind, preview_quote, record_consent, reschedule_step, restore_backup,
+    revoke_consent, run_backup, save_quote_edit, save_quote_pdf, search_leads, send_quote,
+    set_paid, set_step_done, snapshot, status, suggested_total_note, update_settings,
+    whatsapp_link, whatsapp_preview,
 };
 use cominorsa_domain::{
     BillingSummary, CaseRepository, LeadRepository, ProspectRepository, Quote, QuoteRepository,
@@ -713,6 +714,8 @@ fn settings_change(arguments: SettingsArgs) -> SettingsChange {
         whatsapp_template: arguments.whatsapp_template,
         igv: arguments.igv,
         backup_directory: arguments.backup_directory,
+        backup_interval_days: arguments.backup_interval_days,
+        backup_keep: arguments.backup_keep,
         company_name: arguments.company_name,
         company_ruc: arguments.company_ruc,
         company_address: arguments.company_address,
@@ -754,6 +757,9 @@ async fn settings(path: &Path, command: SettingsCommand) -> Result<Reply, Failur
 }
 
 async fn backup(path: &Path, command: BackupCommand, context: &Context) -> Result<Reply, Failure> {
+    if let BackupCommand::Auto { dry_run } = command {
+        return automatic_backup(path, dry_run, context).await;
+    }
     let store = open_for_writing(path).await?;
     let reply = match command {
         BackupCommand::Create { folder } => {
@@ -762,6 +768,7 @@ async fn backup(path: &Path, command: BackupCommand, context: &Context) -> Resul
             let path = saved.display().to_string();
             Reply::new(json!({"path": path}), format!("Copia creada en {path}"))
         }
+        BackupCommand::Auto { .. } => unreachable!("handled before opening to write"),
         BackupCommand::Restore { file } => {
             let restored = restore_backup(store, path, &file, &context.clock).await?;
             restored.store.close().await;
@@ -774,4 +781,39 @@ async fn backup(path: &Path, command: BackupCommand, context: &Context) -> Resul
     };
 
     Ok(reply)
+}
+
+/// A dry run opens the database read-only, so it cannot write anything.
+async fn automatic_backup(path: &Path, dry_run: bool, context: &Context) -> Result<Reply, Failure> {
+    let store = if dry_run {
+        open_for_reading(path).await?
+    } else {
+        open_for_writing(path).await?
+    };
+    let outcome = auto_backup(&store, context, dry_run).await;
+    store.close().await;
+    let outcome = outcome?;
+    let text = match (&outcome.status, &outcome.path) {
+        (AutoBackupStatus::NotConfigured, _) => {
+            "No hay carpeta de copias: no se hizo ninguna copia.".to_owned()
+        }
+        (AutoBackupStatus::NotDue, _) => "La última copia es reciente: no se hizo otra.".to_owned(),
+        (status, Some(copy)) => {
+            let verb = match status {
+                AutoBackupStatus::WouldCreate => "Se crearía",
+                _ => "Copia creada en",
+            };
+            let mut lines = vec![format!("{verb} {}", copy.display())];
+            lines.extend(
+                outcome
+                    .pruned
+                    .iter()
+                    .map(|old| format!("Copia antigua borrada: {}", old.display())),
+            );
+            lines.join("\n")
+        }
+        (_, None) => String::new(),
+    };
+
+    Ok(Reply::new(views::auto_backup(&outcome), text))
 }

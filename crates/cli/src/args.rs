@@ -358,6 +358,12 @@ pub struct SettingsArgs {
     pub igv: Option<String>,
     #[arg(long, value_name = "CARPETA")]
     pub backup_directory: Option<String>,
+    /// Días entre copias automáticas, de 1 a 30
+    #[arg(long, value_name = "DIAS")]
+    pub backup_interval_days: Option<u32>,
+    /// Copias automáticas que se conservan, de 1 a 90
+    #[arg(long, value_name = "COPIAS")]
+    pub backup_keep: Option<u32>,
     #[arg(long)]
     pub company_name: Option<String>,
     #[arg(long)]
@@ -382,6 +388,13 @@ pub enum BackupCommand {
     Create {
         #[arg(long, value_name = "CARPETA")]
         folder: Option<String>,
+    },
+    /// Copia la base en la carpeta guardada si la última copia es más antigua que el
+    /// intervalo, y borra solo las copias más viejas de esta aplicación en esa carpeta
+    Auto {
+        /// Informa qué haría sin escribir ni borrar nada
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Reemplaza la base con una copia validada, tras guardar una copia de seguridad
     Restore {

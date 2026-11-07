@@ -35,6 +35,8 @@ pub struct SettingsChange {
     pub whatsapp_template: Option<String>,
     pub igv: Option<String>,
     pub backup_directory: Option<String>,
+    pub backup_interval_days: Option<u32>,
+    pub backup_keep: Option<u32>,
     pub company_name: Option<String>,
     pub company_ruc: Option<String>,
     pub company_address: Option<String>,
@@ -66,6 +68,9 @@ impl SettingsChange {
                 before.backup_directory().unwrap_or_default(),
                 after.backup_directory().unwrap_or_default(),
             ),
+            backup_interval_days: (before.backup_interval_days() != after.backup_interval_days())
+                .then(|| after.backup_interval_days()),
+            backup_keep: (before.backup_keep() != after.backup_keep()).then(|| after.backup_keep()),
             company_name: changed(&old.name, &new.name),
             company_ruc: changed(&old.ruc, &new.ruc),
             company_address: changed(&old.address, &new.address),
@@ -117,6 +122,12 @@ impl SettingsChange {
         }
         if let Some(directory) = &self.backup_directory {
             settings.set_backup_directory(directory);
+        }
+        if let Some(days) = self.backup_interval_days {
+            settings.set_backup_interval_days(days)?;
+        }
+        if let Some(copies) = self.backup_keep {
+            settings.set_backup_keep(copies)?;
         }
         if let Some(company) = self.company(settings.company()) {
             settings.set_company(company)?;

@@ -6,6 +6,11 @@ const DEFAULT_FOLLOW_UP_DAYS: u32 = 3;
 const DEFAULT_WHATSAPP_TEMPLATE: &str =
     "Hola {nombre}, te escribimos de COMINORSA sobre {servicio}. ¿Podemos conversar?";
 const FOLLOW_UP_DAYS: std::ops::RangeInclusive<u32> = 1..=90;
+const DEFAULT_BACKUP_INTERVAL_DAYS: u32 = 1;
+const DEFAULT_BACKUP_KEEP: u32 = 14;
+const BACKUP_INTERVAL_DAYS: std::ops::RangeInclusive<u32> = 1..=30;
+const BACKUP_KEEP: std::ops::RangeInclusive<u32> = 1..=90;
+const SECONDS_PER_DAY: i64 = 86_400;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ThemePreference {
@@ -75,6 +80,8 @@ pub struct Settings {
     whatsapp_template: String,
     backup_directory: Option<String>,
     last_backup_at: Option<i64>,
+    backup_interval_days: u32,
+    backup_keep: u32,
     company: CompanyProfile,
     igv_rate: IgvRate,
 }
@@ -88,6 +95,8 @@ impl Default for Settings {
             whatsapp_template: DEFAULT_WHATSAPP_TEMPLATE.to_owned(),
             backup_directory: None,
             last_backup_at: None,
+            backup_interval_days: DEFAULT_BACKUP_INTERVAL_DAYS,
+            backup_keep: DEFAULT_BACKUP_KEEP,
             company: CompanyProfile::default(),
             igv_rate: IgvRate::default(),
         }
@@ -166,6 +175,69 @@ impl Settings {
 
     pub fn last_backup_at(&self) -> Option<i64> {
         self.last_backup_at
+    }
+
+    pub fn set_backup_interval_days(&mut self, days: u32) -> Result<(), DomainError> {
+        if !BACKUP_INTERVAL_DAYS.contains(&days) {
+            return Err(DomainError::InvalidBackupInterval);
+        }
+
+        self.backup_interval_days = days;
+        Ok(())
+    }
+
+    /// Rehydrates a stored interval. An unreadable or out-of-range value keeps
+    /// the default, to be corrected in Settings, and never blocks the app.
+    pub fn restore_backup_interval_days(&mut self, stored: &str) {
+        if let Ok(days) = stored.parse() {
+            let _ = self.set_backup_interval_days(days);
+        }
+    }
+
+    pub fn backup_interval_days(&self) -> u32 {
+        self.backup_interval_days
+    }
+
+    pub fn set_backup_keep(&mut self, copies: u32) -> Result<(), DomainError> {
+        if !BACKUP_KEEP.contains(&copies) {
+            return Err(DomainError::InvalidBackupKeep);
+        }
+
+        self.backup_keep = copies;
+        Ok(())
+    }
+
+    /// Rehydrates a stored count, like `restore_backup_interval_days`.
+    pub fn restore_backup_keep(&mut self, stored: &str) {
+        if let Ok(copies) = stored.parse() {
+            let _ = self.set_backup_keep(copies);
+        }
+    }
+
+    /// How many automatic copies stay in the folder, newest first.
+    pub fn backup_keep(&self) -> u32 {
+        self.backup_keep
+    }
+
+    /// When the last backup stops being recent enough, in Unix seconds. `None`
+    /// without a folder or before the first backup.
+    pub fn next_backup_due_at(&self) -> Option<i64> {
+        self.backup_directory.as_ref()?;
+        let interval = i64::from(self.backup_interval_days) * SECONDS_PER_DAY;
+
+        self.last_backup_at
+            .map(|last| last.saturating_add(interval))
+    }
+
+    /// An automatic backup is due when a folder is set and the last backup is
+    /// older than the interval, or there is none yet.
+    pub fn backup_due(&self, now_unix: i64) -> bool {
+        if self.backup_directory.is_none() {
+            return false;
+        }
+
+        self.next_backup_due_at()
+            .is_none_or(|due_at| now_unix > due_at)
     }
 
     /// Trims every field. A RUC, when given, must be valid.

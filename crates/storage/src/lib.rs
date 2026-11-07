@@ -162,6 +162,8 @@ const FOLLOW_UP_DAYS_KEY: &str = "follow_up_days";
 const WHATSAPP_TEMPLATE_KEY: &str = "whatsapp_template";
 const BACKUP_DIRECTORY_KEY: &str = "backup_directory";
 const LAST_BACKUP_AT_KEY: &str = "last_backup_at";
+const BACKUP_INTERVAL_DAYS_KEY: &str = "backup_interval_days";
+const BACKUP_KEEP_KEY: &str = "backup_keep";
 const IGV_RATE_KEY: &str = "igv_basis_points";
 const COMPANY_NAME_KEY: &str = "company_name";
 const COMPANY_RUC_KEY: &str = "company_ruc";
@@ -930,6 +932,8 @@ impl SettingsRepository for SqliteLeads {
                 BACKUP_DIRECTORY_KEY => settings.set_backup_directory(&value),
                 LAST_BACKUP_AT_KEY => settings.record_backup(value.parse().map_err(failure)?),
                 IGV_RATE_KEY => settings.restore_igv_rate(&value),
+                BACKUP_INTERVAL_DAYS_KEY => settings.restore_backup_interval_days(&value),
+                BACKUP_KEEP_KEY => settings.restore_backup_keep(&value),
                 COMPANY_NAME_KEY => company.name = value,
                 COMPANY_RUC_KEY => company.ruc = value,
                 COMPANY_ADDRESS_KEY => company.address = value,
@@ -963,6 +967,11 @@ impl SettingsRepository for SqliteLeads {
                 settings.whatsapp_template().to_owned(),
             ),
             (IGV_RATE_KEY, settings.igv_rate().basis_points().to_string()),
+            (
+                BACKUP_INTERVAL_DAYS_KEY,
+                settings.backup_interval_days().to_string(),
+            ),
+            (BACKUP_KEEP_KEY, settings.backup_keep().to_string()),
         ] {
             sqlx::query(UPSERT_SETTING)
                 .bind(key)

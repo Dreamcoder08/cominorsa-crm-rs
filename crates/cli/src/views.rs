@@ -2,7 +2,7 @@
 //! ISO 8601, money is integer cents, and enums use their stored codes. Keys only
 //! change on purpose.
 
-use cominorsa_application::{AgendaGroups, AgendaItem, FollowUp, Snapshot, Status};
+use cominorsa_application::{AgendaGroups, AgendaItem, AutoBackup, FollowUp, Snapshot, Status};
 use cominorsa_domain::{
     BillingMilestone, CaseFile, CaseStep, CompanyProfile, Lead, Prospect, Quote, Settings,
 };
@@ -166,6 +166,8 @@ pub fn settings(settings: &Settings) -> Value {
         "whatsapp_template": settings.whatsapp_template(),
         "backup_directory": settings.backup_directory(),
         "last_backup_at": settings.last_backup_at(),
+        "backup_interval_days": settings.backup_interval_days(),
+        "backup_keep": settings.backup_keep(),
         "igv_basis_points": settings.igv_rate().basis_points(),
         "company": company(settings.company()),
     })
@@ -252,5 +254,18 @@ pub fn snapshot(state: &Snapshot) -> Value {
         "quote_counters": counters,
         "prospects": state.prospects.iter().map(prospect).collect::<Vec<_>>(),
         "settings": settings(&state.settings),
+    })
+}
+
+pub fn auto_backup(outcome: &AutoBackup) -> Value {
+    let path = |path: &std::path::Path| path.display().to_string();
+
+    json!({
+        "status": outcome.status.code(),
+        "dry_run": outcome.dry_run,
+        "folder": outcome.folder,
+        "path": outcome.path.as_deref().map(path),
+        "pruned": outcome.pruned.iter().map(|old| path(old)).collect::<Vec<_>>(),
+        "next_due_at": outcome.next_due_at,
     })
 }
