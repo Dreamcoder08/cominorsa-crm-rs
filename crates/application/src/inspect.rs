@@ -8,7 +8,7 @@ use cominorsa_domain::{
     CaseFile, CaseRepository, Lead, LeadRepository, Prospect, ProspectRepository, Quote,
     QuoteRepository, Settings, SettingsRepository,
 };
-use cominorsa_storage::{QuoteCounter, SqliteLeads};
+use cominorsa_storage::{AsideFiles, QuoteCounter, SqliteLeads, UpgradeError};
 
 use crate::{cases::is_active, context::Clock, error::AppError};
 
@@ -20,6 +20,15 @@ fn missing(path: &Path) -> AppError {
             path.display()
         ),
     )
+}
+
+/// Refuses a missing database whose file an interrupted upgrade moved aside,
+/// so nothing creates a new one in its place.
+fn refuse_aside(path: &Path) -> Result<(), AppError> {
+    match AsideFiles::find(path) {
+        Some(found) => Err(AppError::storage("database_aside", found.to_string())),
+        None => Ok(()),
+    }
 }
 
 fn newer_schema(found: i64, required: i64) -> AppError {
@@ -34,6 +43,7 @@ fn newer_schema(found: i64, required: i64) -> AppError {
 /// Creates a new database at the current schema and returns that version. An
 /// existing file is refused, whatever it holds.
 pub async fn create_database(path: &Path) -> Result<i64, AppError> {
+    refuse_aside(path)?;
     if path.exists() {
         return Err(AppError::rejected(
             "database_exists",
@@ -59,6 +69,7 @@ pub async fn open_for_writing(path: &Path) -> Result<SqliteLeads, AppError> {
 /// Opens a database to read it. It is never created or migrated: a schema that
 /// does not match is an error that names the upgrade.
 pub async fn open_for_reading(path: &Path) -> Result<SqliteLeads, AppError> {
+    refuse_aside(path)?;
     if !path.exists() {
         return Err(missing(path));
     }
@@ -95,8 +106,11 @@ pub struct Migration {
 
 /// Brings a database to the required schema, after copying it beside itself.
 /// A database that is already current is not touched. The migrations run on a
-/// working copy, so when one fails the database stays as it was.
+/// working copy, so when one fails the database stays as it was. While another
+/// program has the database open, nothing is written and the answer is
+/// `database_busy`.
 pub async fn migrate_database(path: &Path, clock: &Clock) -> Result<Migration, AppError> {
+    refuse_aside(path)?;
     if !path.exists() {
         return Err(missing(path));
     }
@@ -119,19 +133,36 @@ pub async fn migrate_database(path: &Path, clock: &Clock) -> Result<Migration, A
         });
     }
 
-    let safety_copy = path.with_extension(format!("antes-de-migrar-{}.db", clock.file_stamp()));
-    reader.backup_to(&safety_copy).await?;
     reader.close().await;
-    SqliteLeads::upgrade(path, &safety_copy)
+    let safety_copy = SqliteLeads::upgrade(path, &clock.file_stamp())
         .await
-        .map_err(|error| {
-            AppError::storage(
+        .map_err(|error| match error {
+            UpgradeError::Busy { .. } => AppError::storage(
+                "database_busy",
+                format!(
+                    "Otro programa tiene abierta la base {}. Ciérralo y vuelve a intentar: cominorsa migrate",
+                    path.display()
+                ),
+            ),
+            UpgradeError::Failed {
+                error,
+                safety_copy: Some(copy),
+            } => AppError::storage(
                 "migration_failed",
                 format!(
                     "No se pudo actualizar la base: {error}. Sigue en la versión {from} y su copia está en {}",
-                    safety_copy.display()
+                    copy.display()
                 ),
-            )
+            ),
+            UpgradeError::Failed {
+                error,
+                safety_copy: None,
+            } => AppError::storage(
+                "migration_failed",
+                format!(
+                    "No se pudo actualizar la base: {error}. Sigue en la versión {from} y no se hizo ninguna copia"
+                ),
+            ),
         })?;
 
     Ok(Migration {
@@ -166,6 +197,8 @@ pub struct Snapshot {
     pub quote_counters: Vec<QuoteCounter>,
     pub prospects: Vec<Prospect>,
     pub settings: Settings,
+    /// Leads whose stored consent could not be read and load without one.
+    pub unreadable_consents: usize,
 }
 
 pub async fn snapshot(store: &SqliteLeads) -> Result<Snapshot, AppError> {
@@ -182,6 +215,7 @@ pub async fn snapshot(store: &SqliteLeads) -> Result<Snapshot, AppError> {
         quote_counters: store.quote_counters().await?,
         prospects,
         settings: store.load().await?,
+        unreadable_consents: store.unreadable_consents().await?,
     })
 }
 
@@ -198,6 +232,8 @@ pub struct Status {
     pub quotes: usize,
     pub prospects: usize,
     pub team_members: usize,
+    /// Leads whose stored consent could not be read and load without one.
+    pub unreadable_consents: usize,
 }
 
 pub async fn status(store: &SqliteLeads) -> Result<Status, AppError> {
@@ -214,5 +250,6 @@ pub async fn status(store: &SqliteLeads) -> Result<Status, AppError> {
         quotes: store.quotes().await?.len(),
         prospects: store.count().await?,
         team_members: store.load().await?.team().len(),
+        unreadable_consents: store.unreadable_consents().await?,
     })
 }

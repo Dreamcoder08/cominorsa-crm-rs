@@ -58,9 +58,9 @@ The CLI never creates or upgrades a database by itself. `init` creates a new one
 | Older schema | `schema_outdated`, naming both versions and `cominorsa migrate` |
 | Newer schema | `schema_newer`; the journal mode does not change either |
 
-`migrate` is the only command that upgrades. It copies the database beside itself as `*.antes-de-migrar-*.db`, migrates a working copy, and replaces the database with a rename. If a migration fails, it reports `migration_failed`, the database stays as it was, and the copy stays beside it. Close the app before migrating. `backup restore` is the one other path that changes the schema: an older backup is brought to the current schema before it replaces the database, and the backup file itself does not change.
+`migrate` is the only command that upgrades. It first makes sure no other program has the database open: otherwise it reports `database_busy` (exit 3) at once, writes nothing, and the file stays byte-identical; close that program, such as the app, and run it again. It then copies the database beside itself as `*.antes-de-migrar-<stamp>-<process>-<n>.db`, migrates a working copy named `*.migrando-<process>-<n>.db`, and replaces the database with a rename. Both names are new files, so a retry in the same second, or a user file with a similar name, is never overwritten, deleted, or reported as the copy. If a migration fails, it reports `migration_failed`, the database stays as it was, and the copy it made stays beside it. On Linux and macOS an exclusive lock is held from the copy to the rename, so no write can land in between; a program that opened the file and waits on the lock can still read the old data, but SQLite refuses its writes, because the old file leaves WAL mode first. On Windows an open file cannot be renamed, so the database first moves aside as `*.aparte-<process>-<n>.db`, which fails while anyone has it open, and the upgrade works on that file. Until the migrated copy is in place, the database path does not exist; every command, the importer, and the app then refuse with `database_aside`, naming the file moved aside and the safety copy, and never create a new database there. If the upgrade is interrupted in that state, rename the file moved aside back to the database name. `migrate` and `init` set WAL mode; ordinary commands keep the journal mode they find. `backup restore` is the one other path that changes the schema: an older backup is brought to the current schema before it replaces the database, and the backup file itself does not change. Restore validates the backup on a working copy with a new name, `*.restaurando-<process>-<n>.db`, so it too never overwrites or deletes a user file.
 
-A command that only reads opens the file read-only. SQLite may leave an empty `-wal` and a `-shm` file beside the database after a read or a rejected write; the database file itself does not change. A database in the rollback journal is the exception, listed under [Current limits](#current-limits).
+A command that only reads opens the file read-only. SQLite may leave an empty `-wal` and a `-shm` file beside the database after a read or a rejected write; the database file itself does not change, in WAL or in the rollback journal.
 
 The desktop app has no upgrade of its own: at startup it creates a missing database and sends an older one through the same path as `migrate`. If that fails, the app shows the cause and where the copy is, works on no half-upgraded file, and the database stays as it was. A newer schema is refused the same way. Each failed launch keeps its own copy.
 
@@ -85,7 +85,7 @@ Output is Spanish for people. With `--json`, stdout holds one document on succes
 | 1 | Rules: `final_stage`, `contract_not_signed`, `owner_not_in_team`, `duplicate_member`, `missing_contract_total`, `milestones_already_planned`, `quote_locked`, `quote_superseded`, `invalid_quote_transition`, `company_name_missing`, `backup_folder_missing`, `backup_folder_not_absolute`, `id_seed_reused`, `no_consent` |
 | 1 | Files: `database_exists`, `import_invalid`, `import_unreadable`, `pdf_failed`, `pdf_target_exists`, `pdf_target_is_database` |
 | 2 | `usage`, `missing_database` |
-| 3 | `database_missing`, `schema_outdated`, `schema_newer`, `migration_failed`, `storage_error`, `corrupt_record`, `backup_folder_unavailable`, `backup_prune_failed`, `pdf_write_failed`, `runtime_error` |
+| 3 | `database_missing`, `database_aside`, `schema_outdated`, `schema_newer`, `migration_failed`, `database_busy`, `storage_error`, `corrupt_record`, `backup_folder_unavailable`, `backup_prune_failed`, `pdf_write_failed`, `runtime_error` |
 
 JSON keys and error codes are stable and in English. Dates are ISO 8601, money is integer cents, and enums use their stored codes. Quotes accept their number, such as `COT-2026-0001-V2`, or their id.
 
@@ -95,7 +95,7 @@ For reproducible runs, `--today <AAAA-MM-DD>` fixes the day, `--now <seconds>` f
 
 `quote preview --line` returns the totals of some lines at the stored IGV rate, and `settings whatsapp-preview` renders the stored template for a sample client, or a `--template` to try; neither saves anything. `lead show` and each row of `lead list` add `follow_up`, the status for the day: `overdue`, `today`, `upcoming`, or `closed`. Commands that change a quote add `notice`, the sentence the app shows.
 
-`export` returns `schema_version`, `leads`, `cases`, `quotes`, `quote_counters`, `prospects`, and `settings` in a stable order, including closed cases with nothing left to collect. `status` returns `schema_version`, `integrity_check`, and `counts`.
+`export` returns `schema_version`, `leads`, `cases`, `quotes`, `quote_counters`, `prospects`, and `settings` in a stable order, including closed cases with nothing left to collect. `status` returns `schema_version`, `integrity_check`, `counts`, and `unreadable_rows`. Both `export` and `status` report `unreadable_rows.lead_consents`: leads whose stored consent cannot be read, which load as without consent so that every other lead still loads; the unreadable values are never shown.
 
 ## MCP server
 
@@ -204,11 +204,11 @@ Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adap
 | Renewals | Only DAC suggests a renewal, 12 months after closing, pending client validation; a service naming DAC with others renews as a whole. A closed case with unpaid milestones stays listed until they are paid |
 | Follow-up alerts | Visible only while the app is open |
 | Leads from the website or WhatsApp | Registered manually with their origin; there is no automatic intake |
-| Consent | Recorded by people, with no proof attached; rules pending legal review. Older leads have none until it is recorded |
+| Consent | Recorded by people, with no proof attached; rules pending legal review. Older leads have none until it is recorded. A lead whose stored consent cannot be read loads without consent; other changes to that lead keep the stored values byte-for-byte, and only recording consent replaces them |
 | Prospects | Concession titleholders without phone, RUC, or email; potential service is inferred, not verified |
 | Backups | Manual to a user-chosen folder, automatic before an import, `backup auto` or opening the app when the interval passed, and verified restore from Settings. Nothing runs on a timer while the app stays open |
 | Disk encryption | Not provided by the app; enable it on the laptop |
-| Rollback-journal databases | Every write opens in WAL mode, so a rejected write on a database in the rollback journal keeps its rows but changes two header bytes. `init`, an upgrade, and a restore all leave WAL, so this needs a file altered outside the app |
+| Rollback-journal databases | Kept as they are by every command; only `migrate` of an older schema, or a restore, moves one to WAL |
 | Hard links on Windows | Stable Rust has no file index there, so a PDF target is matched to the database by size, creation, and modification time; another file matching all three is refused too |
 | Windows | Cross-compiled with `cargo zigbuild --target x86_64-pc-windows-gnu`; not run on Windows yet; requires the WebView2 runtime. The `.github/workflows/windows.yml` build needs an active GitHub billing state |
 

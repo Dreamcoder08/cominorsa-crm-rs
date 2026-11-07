@@ -482,3 +482,30 @@ fn an_unknown_flag_is_a_usage_error_on_stderr() {
     assert!(output.stdout.is_empty(), "{output:?}");
     assert!(!output.stderr.is_empty());
 }
+
+#[test]
+fn a_write_tool_keeps_an_unreadable_consent_byte_for_byte() {
+    let scratch = Scratch::new();
+    let fixture = synthetic(&scratch);
+    let lead = fixture.open_lead.to_string();
+    common::sqlite(
+        &fixture.db,
+        &format!(
+            "UPDATE leads SET consent_given = 1, consent_on = '2026-02-30',
+                consent_source = 'Firmó formulario F-12' WHERE id = '{lead}';"
+        ),
+    );
+    let query = format!(
+        "SELECT quote(consent_given) || '|' || quote(consent_on) || '|' ||
+            quote(consent_source) FROM leads WHERE id = '{lead}';"
+    );
+    let stored = common::sqlite(&fixture.db, &query);
+    let mut session = Session::with_db(&fixture.db, &["--allow-writes"]);
+
+    let assigned = session.data("lead_assign", json!({"id": lead, "owner": "Ana Torres"}));
+
+    assert_eq!(assigned["lead"]["consent"], Value::Null);
+    assert_eq!(common::sqlite(&fixture.db, &query), stored);
+    let status = session.data("status", json!({}));
+    assert_eq!(status["unreadable_rows"]["lead_consents"], json!(1));
+}

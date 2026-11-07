@@ -68,6 +68,7 @@ impl From<ImportError> for Failure {
         Self::App(match error {
             ImportError::Storage(failure) => failure.into(),
             ImportError::DatabaseMissing(_) => AppError::storage("database_missing", message),
+            ImportError::DatabaseAside(_) => AppError::storage("database_aside", message),
             ImportError::SchemaOutdated { .. } => AppError::storage("schema_outdated", message),
             ImportError::SchemaNewer { .. } => AppError::storage("schema_newer", message),
             ImportError::Unreadable(_) => AppError::rejected("import_unreadable", message),
@@ -121,14 +122,15 @@ pub async fn run(cli: Cli) -> Result<Reply, Failure> {
             let found = status(&store).await?;
             store.close().await;
             let text = format!(
-                "Esquema: {}\nIntegridad: {}\nLeads: {}\nExpedientes: {}\nExpedientes activos: {}\nCotizaciones: {}\nProspectos: {}",
+                "Esquema: {}\nIntegridad: {}\nLeads: {}\nExpedientes: {}\nExpedientes activos: {}\nCotizaciones: {}\nProspectos: {}\nConsentimientos ilegibles: {}",
                 found.schema_version,
                 found.integrity_check,
                 found.leads,
                 found.cases,
                 found.active_cases,
                 found.quotes,
-                found.prospects
+                found.prospects,
+                found.unreadable_consents
             );
             Ok(Reply::new(views::status(&found), text))
         }
