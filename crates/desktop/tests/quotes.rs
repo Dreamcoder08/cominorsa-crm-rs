@@ -154,14 +154,25 @@ fn extracted_text(pdf: &[u8], flags: &[&str]) -> Option<String> {
     let path = scratch.0.join("quote.pdf");
     fs::write(&path, pdf).unwrap();
     let output = Command::new("pdftotext")
+        .args(["-enc", "UTF-8"])
         .args(flags)
         .arg(&path)
         .arg("-")
         .output()
         .unwrap();
+
+    // Older builds, such as the one on Windows runners, lack layout flags.
+    if !output.status.success() && !flags.is_empty() {
+        eprintln!("SKIPPED layout extraction: pdftotext does not support {flags:?}");
+        return None;
+    }
     assert!(output.status.success(), "pdftotext refused the file");
 
-    Some(String::from_utf8(output.stdout).unwrap())
+    Some(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .replace("\r\n", "\n"),
+    )
 }
 
 fn assert_valid_pdf(pdf: &[u8]) {
