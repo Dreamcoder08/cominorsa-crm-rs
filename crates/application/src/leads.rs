@@ -106,8 +106,7 @@ pub async fn add_lead<R: LeadRepository>(
                     created: false,
                 })
             } else {
-                Err(AppError::rejected(
-                    "id_conflict",
+                Err(AppError::seed_reused(
                     "Ese identificador ya pertenece a otro lead",
                 ))
             };
@@ -169,6 +168,17 @@ where
     let template = procedure_template(lead.service());
     let mut opening = ids.opening(CaseFile::open(&lead, today, &template)?)?;
     opening.suggest_total_from(&repository.quotes().await?)?;
+    if ids.is_seeded() {
+        let taken =
+            repository.all_cases().await?.iter().any(|file| {
+                file.case.id() == opening.case.id() && file.case.lead_id() != lead.id()
+            });
+        if taken {
+            return Err(AppError::seed_reused(
+                "Ese identificador ya pertenece a otro expediente",
+            ));
+        }
+    }
     let case = if repository.sign_and_open(&lead, &opening).await? {
         Some(opening)
     } else {

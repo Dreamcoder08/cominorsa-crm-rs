@@ -494,6 +494,9 @@ pub trait CaseRepository: Send + Sync {
 
     /// Open cases plus closed ones with unpaid milestones, so money still owed
     /// never disappears from the app.
+    /// Every case, including closed ones with nothing left to collect.
+    fn all_cases(&self) -> impl Future<Output = Result<Vec<CaseFile>, RepositoryError>> + Send;
+
     fn active_cases(&self) -> impl Future<Output = Result<Vec<CaseFile>, RepositoryError>> + Send;
 
     /// Stores a step's completion and due date.

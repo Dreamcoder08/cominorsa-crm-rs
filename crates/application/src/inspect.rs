@@ -5,8 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use cominorsa_domain::{
-    CaseFile, Lead, LeadRepository, Prospect, ProspectRepository, Quote, QuoteRepository, Settings,
-    SettingsRepository,
+    CaseFile, CaseRepository, Lead, LeadRepository, Prospect, ProspectRepository, Quote,
+    QuoteRepository, Settings, SettingsRepository,
 };
 use cominorsa_storage::{QuoteCounter, SqliteLeads};
 

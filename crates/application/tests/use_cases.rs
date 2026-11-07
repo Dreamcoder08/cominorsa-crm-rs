@@ -240,7 +240,7 @@ async fn a_seed_reused_for_other_data_is_refused() {
         .await
         .unwrap_err();
 
-    assert_eq!(refused.code(), "id_conflict");
+    assert_eq!(refused.code(), "id_seed_reused");
     assert_eq!(refused.kind(), ErrorKind::Rejected);
     assert_eq!(store.list().await.unwrap()[0].name(), "Lead Uno");
 }
@@ -1068,7 +1068,7 @@ async fn a_seed_reused_for_another_quote_is_refused() {
         .await
         .unwrap_err();
 
-    assert_eq!(refused.code(), "id_conflict");
+    assert_eq!(refused.code(), "id_seed_reused");
     assert_eq!(store.quotes().await.unwrap()[0].notes(), "");
 }
 

@@ -36,6 +36,11 @@ impl AppError {
         }
     }
 
+    /// An id seed that already produced a different record.
+    pub(crate) fn seed_reused(message: &str) -> Self {
+        Self::rejected("id_seed_reused", message)
+    }
+
     pub(crate) fn invalid_date(message: &str) -> Self {
         Self::rejected("invalid_date", message)
     }

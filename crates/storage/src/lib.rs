@@ -284,12 +284,6 @@ impl SqliteLeads {
         Ok(findings.join("\n"))
     }
 
-    /// Every case, including closed ones with nothing left to collect.
-    pub async fn all_cases(&self) -> Result<Vec<CaseFile>, RepositoryError> {
-        self.load_cases(SELECT_ALL_CASES, SELECT_ALL_CASE_STEPS)
-            .await
-    }
-
     /// The numbering counter of each year, oldest year first.
     pub async fn quote_counters(&self) -> Result<Vec<QuoteCounter>, RepositoryError> {
         let rows = sqlx::query(SELECT_QUOTE_COUNTERS)
@@ -553,6 +547,11 @@ impl CaseRepository for SqliteLeads {
 
     async fn open_cases(&self) -> Result<Vec<CaseFile>, RepositoryError> {
         self.load_cases(SELECT_OPEN_CASES, SELECT_OPEN_CASE_STEPS)
+            .await
+    }
+
+    async fn all_cases(&self) -> Result<Vec<CaseFile>, RepositoryError> {
+        self.load_cases(SELECT_ALL_CASES, SELECT_ALL_CASE_STEPS)
             .await
     }
 

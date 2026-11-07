@@ -349,8 +349,44 @@ expect "byte-identical export" "$(export_of "$root/first")" "$(export_of "$root/
 [[ "$(export_of "$root/first" | jq '.data.quotes | length')" == 1 ]] || fail "the export lost its quotes"
 expect "export hash" "$(export_of "$root/first" | sha256sum)" "$(export_of "$root/second" | sha256sum)"
 
-echo "== an older schema is reported, never migrated by a read"
+echo "== a reused id seed is refused, an identical repeat is not"
 cd "$root"
+cp "$root/first/crm.db" seeds.db
+db=seeds.db
+seeded() {
+    local seed="$1"
+    shift
+    "$binary" --db "$db" --json --today "$day" --id-seed "$seed" "$@" | jq -c '.data'
+}
+signed_case() {
+    local id
+    id="$(seeded "$1" lead add --name "$2" --phone "$3" --service "$4" --follow-up 2026-04-01 | jq -r '.lead.id')"
+    seeded "$1-1" lead advance "$id" >/dev/null
+    seeded "$1-2" lead advance "$id" >/dev/null
+    seeded "$5" lead advance "$id" | jq -r '.case.id'
+}
+seed_case="$(signed_case uno Uno 987654341 DAC abre)"
+seeded extra billing add "$seed_case" --title Extra --amount 100 --due 2026-05-01 >/dev/null
+hash_before="$(state_hash)"
+expect "an identical billing repeat changes nothing" false \
+    "$(seeded extra billing add "$seed_case" --title Extra --amount 100 --due 2026-05-01 | jq '.changed')"
+expect "state after an identical repeat" "$hash_before" "$(state_hash)"
+refused 1 id_seed_reused --id-seed extra billing add "$seed_case" --title Otro --amount 999 --due 2026-06-01
+seeded zeta lead add --name Zeta --phone 987654342 --service REINFO --follow-up 2026-04-02 >/dev/null
+refused 1 id_seed_reused --id-seed zeta case close "$seed_case"
+dos="$(seeded dos lead add --name Dos --phone 987654343 --service REINFO --follow-up 2026-04-03 | jq -r '.lead.id')"
+seeded dos-1 lead advance "$dos" >/dev/null
+seeded dos-2 lead advance "$dos" >/dev/null
+refused 1 id_seed_reused --id-seed abre lead advance "$dos"
+primera="$(seeded p1 quote create --lead "$dos" --line "a|1|100" | jq -r '.quote.number')"
+segunda="$(seeded p2 quote create --lead "$dos" --line "b|1|100" | jq -r '.quote.number')"
+seeded p3 quote send "$primera" >/dev/null
+seeded p4 quote send "$segunda" >/dev/null
+seeded version quote version "$primera" >/dev/null
+refused 1 id_seed_reused --id-seed version quote version "$segunda"
+db=crm.db
+
+echo "== an older schema is reported, never migrated by a read"
 cp "$root/first/crm.db" old.db
 sqlite3 old.db "PRAGMA journal_mode = DELETE;
     DROP TABLE quote_lines; DROP TABLE quotes; DROP TABLE quote_numbers;

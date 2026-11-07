@@ -113,22 +113,47 @@ pub async fn save_billing<R: BillingRepository>(
     .map_err(AppError::from)
 }
 
+/// Whether seeded milestones already exist. The same request repeats and
+/// changes nothing; the same id with other data is refused.
+fn is_repeat(milestones: &[BillingMilestone], cases: &[CaseFile]) -> Result<bool, AppError> {
+    let stored = || cases.iter().flat_map(|file| &file.milestones);
+    let mut repeated = false;
+
+    for new in milestones {
+        let Some(old) = stored().find(|old| old.id() == new.id()) else {
+            continue;
+        };
+        let same = old.case_id() == new.case_id()
+            && old.title() == new.title()
+            && old.amount() == new.amount()
+            && old.due_on() == new.due_on();
+        if !same {
+            return Err(AppError::seed_reused(
+                "Ese identificador ya pertenece a otro hito",
+            ));
+        }
+        repeated = true;
+    }
+
+    Ok(repeated)
+}
+
 /// Validates and saves one billing edit. Returns `false` when a seeded
-/// milestone already exists, which changes nothing.
-pub async fn apply_billing<R: BillingRepository>(
+/// request repeats, which changes nothing.
+pub async fn apply_billing<R>(
     repository: &R,
     file: &CaseFile,
     edit: BillingEdit,
     draft: &MilestoneValues,
     context: &mut Context,
-) -> Result<bool, AppError> {
+) -> Result<bool, AppError>
+where
+    R: BillingRepository + CaseRepository,
+{
     let change = match billing_change(file, edit, draft, context.clock.today())? {
         BillingChange::Add(milestones) => {
             let milestones = context.ids.milestones(milestones)?;
-            let repeated = milestones
-                .iter()
-                .any(|new| file.milestones.iter().any(|old| old.id() == new.id()));
-            if repeated {
+            if context.ids.is_seeded() && is_repeat(&milestones, &repository.all_cases().await?)? {
                 return Ok(false);
             }
             BillingChange::Add(milestones)

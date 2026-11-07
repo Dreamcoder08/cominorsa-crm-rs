@@ -226,24 +226,26 @@ pub struct SavedQuote {
 }
 
 /// A seeded id can repeat. The same request then returns the stored quote and
-/// uses no number; the same id with other content is refused.
+/// uses no number; the same id for anything else is refused.
 fn refuse_foreign_repeat(draft: &QuoteDraft, quotes: &[Quote]) -> Result<(), AppError> {
-    let stored = quotes.iter().find(|quote| quote.id() == draft.id());
-    let Some(stored) = stored.filter(|_| draft.revised_quote().is_none()) else {
+    let Some(stored) = quotes.iter().find(|quote| quote.id() == draft.id()) else {
         return Ok(());
     };
     let requested = draft.clone().numbered(stored.number());
-    let same = stored.lead_id() == requested.lead_id()
-        && stored.issued_on() == requested.issued_on()
-        && stored.valid_until() == requested.valid_until()
-        && stored.notes() == requested.notes()
-        && stored.lines() == requested.lines();
+    // A new version copies its quote, so naming the same quote is the request.
+    let same_content = draft.revised_quote().is_some()
+        || (stored.issued_on() == requested.issued_on()
+            && stored.valid_until() == requested.valid_until()
+            && stored.notes() == requested.notes()
+            && stored.lines() == requested.lines());
 
-    if same {
+    if same_content
+        && stored.lead_id() == requested.lead_id()
+        && stored.supersedes() == requested.supersedes()
+    {
         Ok(())
     } else {
-        Err(AppError::rejected(
-            "id_conflict",
+        Err(AppError::seed_reused(
             "Ese identificador ya pertenece a otra cotización",
         ))
     }

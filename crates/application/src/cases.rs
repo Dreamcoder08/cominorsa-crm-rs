@@ -3,7 +3,6 @@
 use cominorsa_domain::{
     CaseClosure, CaseFile, CaseRepository, CaseStatus, CaseStep, Lead, LeadRepository,
 };
-use cominorsa_storage::SqliteLeads;
 use time::{Date, format_description::well_known::Iso8601};
 use uuid::Uuid;
 
@@ -115,11 +114,19 @@ where
         .ok_or_else(|| {
             AppError::rejected("lead_not_found", "No se encontró el lead del expediente")
         })?;
+    let was_open = case.status() == CaseStatus::Open;
     let mut closure = CaseClosure::of(case, source, today);
     closure.renewal = closure
         .renewal
         .map(|renewal| ids.lead(renewal))
         .transpose()?;
+    if let Some(renewal) = closure.renewal.as_ref().filter(|_| was_open)
+        && leads.iter().any(|lead| lead.id() == renewal.id())
+    {
+        return Err(AppError::seed_reused(
+            "Ese identificador ya pertenece a otro lead",
+        ));
+    }
     let closed = repository.close_case(&closure).await?;
 
     Ok(CaseClosing {
@@ -152,8 +159,11 @@ where
 }
 
 /// Any stored case, including a closed one with nothing left to collect.
-pub async fn find_stored_case(store: &SqliteLeads, id: Uuid) -> Result<CaseFile, AppError> {
-    store
+pub async fn find_stored_case<R: CaseRepository>(
+    repository: &R,
+    id: Uuid,
+) -> Result<CaseFile, AppError> {
+    repository
         .all_cases()
         .await?
         .into_iter()
@@ -163,12 +173,21 @@ pub async fn find_stored_case(store: &SqliteLeads, id: Uuid) -> Result<CaseFile,
 
 /// Closes a case by id. Closing it again changes nothing, even after it is
 /// settled and no longer active.
-pub async fn close_case(
-    store: &SqliteLeads,
+pub async fn close_case<R>(
+    repository: &R,
     id: Uuid,
     context: &mut Context,
-) -> Result<CaseClosing, AppError> {
-    let file = find_stored_case(store, id).await?;
+) -> Result<CaseClosing, AppError>
+where
+    R: LeadRepository + CaseRepository,
+{
+    let file = find_stored_case(repository, id).await?;
 
-    close(store, file.case, context.clock.today(), &mut context.ids).await
+    close(
+        repository,
+        file.case,
+        context.clock.today(),
+        &mut context.ids,
+    )
+    .await
 }
