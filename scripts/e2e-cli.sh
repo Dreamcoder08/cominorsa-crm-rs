@@ -480,20 +480,44 @@ echo "== automatic backups copy when due and prune only their own files"
 db=auto.db
 "$binary" --db "$db" --json init >/dev/null
 now=1772470800
+copies="$PWD/auto-copias"
+# auto_at <unix seconds> [args...]: backup auto at that instant of the fixed day.
 auto_at() {
     local at="$1"
     shift
     "$binary" --db "$db" --json --today "$day" --now "$at" backup auto "$@" | jq -c '.data'
 }
-# Every entry of the folder with a short hash, so any write or delete shows.
+# auto_on <day> [args...]: backup auto at noon of that day.
+auto_on() {
+    local on="$1"
+    shift
+    "$binary" --db "$db" --json --today "$on" backup auto "$@" | jq -c '.data'
+}
+# Every entry of a folder with a short hash, so any write or delete shows.
 listing() {
-    (cd auto-copias && find . -mindepth 1 | sort | while read -r entry; do
+    (cd "${1:-$copies}" && find . -mindepth 1 | sort | while read -r entry; do
         if [[ -f "$entry" ]]; then
             echo "$entry $(sha256sum <"$entry" | cut -c1-16)"
         else
             echo "$entry dir"
         fi
     done)
+}
+# auto_refused <exit> <code> <folder> [args...]: backup auto fails with that
+# code, and the folder, the database file, and the export stay identical.
+auto_refused() {
+    local exit_code="$1" code="$2" folder="$3" status=0 files hash state
+    shift 3
+    files="$(listing "$folder")"
+    hash="$(file_hash "$db")"
+    state="$(state_hash)"
+    "$binary" --db "$db" --json --today "$day" "$@" >auto.out 2>auto.err || status=$?
+    expect "exit of '$*' with $code" "$exit_code" "$status"
+    expect "code of '$*'" "$code" "$(jq -r '.error.code' auto.err)"
+    expect "stdout of '$*'" "" "$(cat auto.out)"
+    expect "folder after '$*'" "$files" "$(listing "$folder")"
+    expect "file hash after '$*'" "$hash" "$(file_hash "$db")"
+    expect "state after '$*'" "$state" "$(state_hash)"
 }
 expect "no folder means no copy" not_configured "$(auto_at "$now" | jq -r '.status')"
 expect "settings default interval" 1 "$(cli settings show | jq '.backup_interval_days')"
@@ -502,51 +526,88 @@ refused 1 invalid_backup_interval settings set --backup-interval-days 0
 refused 1 invalid_backup_interval settings set --backup-interval-days 31
 refused 1 invalid_backup_keep settings set --backup-keep 0
 refused 1 invalid_backup_keep settings set --backup-keep 91
-cli settings set --backup-directory carpeta-ausente >/dev/null
+cli settings set --backup-directory "$PWD/carpeta-ausente" >/dev/null
 refused 3 backup_folder_unavailable backup auto
 refused 3 backup_folder_unavailable backup auto --dry-run
 [[ ! -e carpeta-ausente ]] || fail "a missing backup folder was created"
 mkdir -p auto-copias/crm-20240101-090000.db
 for name in crm-20260101-090000.db crm-20260201-090000.db notas.txt crm-viejo.db \
-    crm-20250101-090000.db.bak otro-20250101-090000.db crm-2025010-090000.db; do
+    crm-20250101-090000.db.bak otro-20250101-090000.db crm-2025010-090000.db \
+    crm-20250195-000095.db crm-20990101-000000.db; do
     echo "$name" >"auto-copias/$name"
 done
-cli settings set --backup-directory auto-copias --backup-keep 2 --backup-interval-days 1 >/dev/null
+# A relative folder is refused from anywhere, never resolved where the app runs.
+mkdir -p elsewhere
+cp -r auto-copias elsewhere/auto-copias
+cli settings set --backup-directory auto-copias --backup-keep 2 >/dev/null
+absolute_db="$PWD/$db"
+(cd elsewhere && db="$absolute_db" && auto_refused 1 backup_folder_not_absolute "$PWD/auto-copias" backup auto)
+(cd elsewhere && db="$absolute_db" && auto_refused 1 backup_folder_not_absolute "$PWD/auto-copias" backup auto --dry-run)
+auto_refused 1 backup_folder_not_absolute "$copies" backup auto
+rm -rf elsewhere
+cli settings set --backup-directory "$copies" --backup-keep 2 --backup-interval-days 1 >/dev/null
 expect "settings keep the interval" 1 "$(cli export | jq '.settings.backup_interval_days')"
 expect "settings keep the count" 2 "$(cli export | jq '.settings.backup_keep')"
 files_before="$(listing)"
 database_hash="$(file_hash "$db")"
 dry="$(auto_at "$now" --dry-run)"
 expect "dry run status" would_create "$(jq -r '.status' <<<"$dry")"
-expect "dry run copy" auto-copias/crm-20260302-120000.db "$(jq -r '.path' <<<"$dry")"
-expect "dry run pruning" '["auto-copias/crm-20260101-090000.db"]' "$(jq -c '.pruned' <<<"$dry")"
+expect "dry run copy" "$copies/crm-20260302-120000.db" "$(jq -r '.path' <<<"$dry")"
+expect "dry run pruning" "[\"$copies/crm-20260101-090000.db\"]" "$(jq -c '.pruned' <<<"$dry")"
 expect "a dry run writes no file" "$files_before" "$(listing)"
 expect "a dry run leaves the database" "$database_hash" "$(file_hash "$db")"
 created="$(auto_at "$now")"
 expect "a due copy is created" created "$(jq -r '.status' <<<"$created")"
 [[ -f auto-copias/crm-20260302-120000.db ]] || fail "the automatic copy does not exist"
-expect "the oldest own copy is pruned" '["auto-copias/crm-20260101-090000.db"]' "$(jq -c '.pruned' <<<"$created")"
-expect "unrelated files stay byte-identical" \
+expect "the dry run predicted the copy" "$(jq -c '{path, pruned}' <<<"$dry")" "$(jq -c '{path, pruned}' <<<"$created")"
+expect "the oldest own copy is pruned" "[\"$copies/crm-20260101-090000.db\"]" "$(jq -c '.pruned' <<<"$created")"
+expect "unrelated files, impossible and future stamps stay byte-identical" \
     "$(grep -v 'crm-20260101-090000.db ' <<<"$files_before")" \
     "$(listing | grep -v 'crm-20260302-120000.db ')"
 expect "the copy records the time" "$now" "$(cli export | jq '.settings.last_backup_at')"
+expect "the next copy is due at midnight in Peru" $((now + 43200)) "$(jq '.next_due_at' <<<"$created")"
 files_before="$(listing)"
-expect "no copy inside the interval" not_due "$(auto_at $((now + 86400)) | jq -r '.status')"
+expect "no copy later the same day" not_due "$(auto_at $((now + 39600)) | jq -r '.status')"
 expect "a skipped copy writes nothing" "$files_before" "$(listing)"
-later="$(auto_at $((now + 86401)))"
-expect "a copy once the interval passed" created "$(jq -r '.status' <<<"$later")"
-expect "pruning keeps the newest two" '["auto-copias/crm-20260201-090000.db"]' "$(jq -c '.pruned' <<<"$later")"
-expect "own copies left" 2 "$(find auto-copias -maxdepth 1 -type f -name 'crm-????????-??????.db' | wc -l)"
+later="$(auto_on 2026-03-03)"
+expect "a daily opening copies the next calendar day" created "$(jq -r '.status' <<<"$later")"
+expect "pruning keeps the newest two" "[\"$copies/crm-20260201-090000.db\"]" "$(jq -c '.pruned' <<<"$later")"
+expect "own copies left" 2 "$(find auto-copias -maxdepth 1 -type f -name 'crm-2026????-??????.db' | wc -l)"
+[[ -f auto-copias/crm-20990101-000000.db ]] || fail "a copy stamped in the future was deleted"
 files_before="$(listing)"
 state_before="$(state_hash)"
 chmod 555 auto-copias
+auto_refused 3 backup_folder_unavailable "$copies" --now $((now + 3 * 86400)) backup auto
+auto_refused 3 backup_folder_unavailable "$copies" --now $((now + 3 * 86400)) backup auto --dry-run
 status=0
-"$binary" --db "$db" --json --today "$day" --now $((now + 3 * 86400)) backup auto >auto.out 2>auto.err || status=$?
+"$binary" --db "$db" --json --today "$day" backup create >auto.out 2>auto.err || status=$?
 chmod 755 auto-copias
-expect "an unwritable folder fails" 3 "$status"
-expect "stdout of an unwritable folder" "" "$(cat auto.out)"
+expect "backup create keeps its own failure" "3 storage_error" "$status $(jq -r '.error.code' auto.err)"
 expect "an unwritable folder deletes nothing" "$files_before" "$(listing)"
 expect "state after an unwritable folder" "$state_before" "$(state_hash)"
+
+echo "== automatic backups never delete the live database or a link to it"
+live="$PWD/vivas"
+mkdir -p "$live"
+db="$live/crm-20200101-000000.db"
+"$binary" --db "$db" --json init >/dev/null
+cli settings set --backup-directory "$live" --backup-keep 1 >/dev/null
+dry="$(auto_at "$now" --dry-run)"
+created="$(auto_at "$now")"
+expect "the live database is not pruned" '[]' "$(jq -c '.pruned' <<<"$created")"
+expect "the dry run agrees on the live database" '[]' "$(jq -c '.pruned' <<<"$dry")"
+[[ -f "$db" ]] || fail "the live database was deleted"
+expect "the live database still answers" "$now" "$(cli export | jq '.settings.last_backup_at')"
+db=linked.db
+"$binary" --db "$db" --json init >/dev/null
+linked="$PWD/enlazadas"
+mkdir -p "$linked"
+echo vieja >"$linked/crm-20200101-000000.db"
+cli settings set --backup-directory "$linked" --backup-keep 1 >/dev/null
+ln "$db" "$linked/crm-20200102-000000.db"
+created="$(auto_at "$now")"
+expect "a hard link to the live database is not pruned" "[\"$linked/crm-20200101-000000.db\"]" "$(jq -c '.pruned' <<<"$created")"
+expect "the link still reaches the live database" "$(file_hash "$db")" "$(file_hash "$linked/crm-20200102-000000.db")"
 db=crm.db
 
 echo "== an older schema is reported, never migrated by a read"

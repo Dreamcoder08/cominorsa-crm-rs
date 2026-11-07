@@ -5,12 +5,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use cominorsa_domain::SettingsRepository;
+use cominorsa_domain::{Settings, SettingsRepository};
 use cominorsa_storage::SqliteLeads;
+use time::Date;
 
 use crate::{
     context::{Clock, Context},
     error::AppError,
+    quotes::is_database_file,
 };
 
 const BACKUP_PREFIX: &str = "crm-";
@@ -21,21 +23,25 @@ fn backup_file_name(clock: &Clock) -> String {
     format!("{BACKUP_PREFIX}{}{BACKUP_SUFFIX}", clock.file_stamp())
 }
 
-/// Whether `name` follows this app's backup naming exactly: `crm-`, eight
-/// digits, `-`, six digits, `.db`. Pruning deletes nothing else.
-pub fn is_backup_file_name(name: &str) -> bool {
-    let Some(stamp) = name
-        .strip_prefix(BACKUP_PREFIX)
-        .and_then(|rest| rest.strip_suffix(BACKUP_SUFFIX))
-    else {
-        return false;
-    };
-
-    stamp.len() == 15
+/// The stamp of a name that follows this app's backup naming exactly: `crm-`,
+/// a real instant as eight digits, `-`, six digits, then `.db`.
+fn backup_stamp(name: &str) -> Option<&str> {
+    let stamp = name
+        .strip_prefix(BACKUP_PREFIX)?
+        .strip_suffix(BACKUP_SUFFIX)?;
+    let shaped = stamp.len() == 15
         && stamp.bytes().enumerate().all(|(index, byte)| match index {
             8 => byte == b'-',
             _ => byte.is_ascii_digit(),
-        })
+        });
+
+    (shaped && Clock::is_file_stamp(stamp)).then_some(stamp)
+}
+
+/// Whether `name` follows this app's backup naming exactly, such as
+/// `crm-20260302-120000.db`. Pruning deletes nothing else.
+pub fn is_backup_file_name(name: &str) -> bool {
+    backup_stamp(name).is_some()
 }
 
 /// Writes a timestamped copy to the chosen folder and returns its path.
@@ -129,17 +135,55 @@ fn folder_unavailable(folder: &str, cause: impl std::fmt::Display) -> AppError {
     )
 }
 
-/// The names of this app's copies in `folder`, newest first. A missing or
-/// unreadable folder is an error; it is never created here.
-fn existing_copies(folder: &str) -> Result<Vec<String>, AppError> {
+/// The saved folder must be absolute: a relative one would depend on where
+/// the app was started.
+fn absolute_folder(folder: &str) -> Result<(), AppError> {
+    if Path::new(folder).is_absolute() {
+        return Ok(());
+    }
+
+    Err(AppError::rejected(
+        "backup_folder_not_absolute",
+        format!("La carpeta de copias {folder} debe ser una ruta completa, como /media/usb/copias"),
+    ))
+}
+
+/// The folder must exist, be a folder, and accept new files. It is never
+/// created here, and a dry run checks exactly what a real run checks.
+fn usable_folder(folder: &str) -> Result<(), AppError> {
+    let metadata = fs::metadata(folder).map_err(|error| folder_unavailable(folder, error))?;
+    if !metadata.is_dir() {
+        return Err(folder_unavailable(folder, "no es una carpeta"));
+    }
+    if metadata.permissions().readonly() {
+        return Err(folder_unavailable(folder, "no se puede escribir en ella"));
+    }
+
+    Ok(())
+}
+
+/// The copies pruning may delete, newest first: files in `folder` named
+/// exactly like this app's copies, except the copy this run makes, copies
+/// stamped after it (a clock was wrong; they are neither counted nor
+/// deleted), and the live database or its sidecars by path or identity.
+fn prunable_copies(folder: &str, database: &Path, new_name: &str) -> Result<Vec<String>, AppError> {
+    let new_stamp = backup_stamp(new_name).unwrap_or_default();
     let entries = fs::read_dir(folder).map_err(|error| folder_unavailable(folder, error))?;
     let mut names = Vec::new();
 
     for entry in entries {
         let entry = entry.map_err(|error| folder_unavailable(folder, error))?;
+        // A link is not a file here, so a link to elsewhere is never deleted.
         let is_file = entry.file_type().is_ok_and(|kind| kind.is_file());
         let name = entry.file_name().to_string_lossy().into_owned();
-        if is_file && is_backup_file_name(&name) {
+        let Some(stamp) = backup_stamp(&name) else {
+            continue;
+        };
+        if is_file
+            && name != new_name
+            && stamp < new_stamp
+            && !is_database_file(&entry.path(), database)
+        {
             names.push(name);
         }
     }
@@ -149,20 +193,32 @@ fn existing_copies(folder: &str) -> Result<Vec<String>, AppError> {
     Ok(names)
 }
 
-/// The copies beyond the newest `keep`, oldest last.
-fn beyond(names: Vec<String>, keep: u32) -> Vec<String> {
-    names
-        .into_iter()
-        .skip(usize::try_from(keep).unwrap_or(usize::MAX))
-        .collect()
+/// The first second, in Peru, of the day a copy becomes due after one made on
+/// `last_backup_on`.
+fn next_due_at(settings: &Settings, last_backup_on: Option<Date>) -> Option<i64> {
+    settings
+        .next_backup_on(last_backup_on)
+        .map(Clock::start_of_day_in_peru)
 }
 
-/// Copies the database to the saved folder when the last backup is older than
-/// the interval, then deletes this app's oldest copies beyond the kept count.
-/// A dry run reports the same without writing anything. A missing or
-/// unwritable folder is an error and deletes nothing.
+/// The copies beyond the newest `keep`, counting the copy this run makes.
+fn beyond(names: Vec<String>, keep: u32) -> Vec<String> {
+    let others = usize::try_from(keep)
+        .unwrap_or(usize::MAX)
+        .saturating_sub(1);
+
+    names.into_iter().skip(others).collect()
+}
+
+/// Copies the database to the saved folder when the last backup is from a
+/// calendar day at least the interval before today, in Peru, then deletes this
+/// app's oldest copies beyond the kept count. The copy just made, the live
+/// `database` and its sidecars are never deleted. A dry run checks and reports
+/// the same without writing anything. A relative, missing, or unwritable
+/// folder is an error and deletes nothing.
 pub async fn auto_backup(
     store: &SqliteLeads,
+    database: &Path,
     context: &Context,
     dry_run: bool,
 ) -> Result<AutoBackup, AppError> {
@@ -174,31 +230,40 @@ pub async fn auto_backup(
             None,
         ));
     };
-    if !settings.backup_due(context.clock.now_unix()) {
+    absolute_folder(&folder)?;
+    let last_backup_on = settings.last_backup_at().and_then(Clock::day_in_peru);
+    if !settings.backup_due(context.clock.today(), last_backup_on) {
         return Ok(AutoBackup {
-            next_due_at: settings.next_backup_due_at(),
+            next_due_at: next_due_at(&settings, last_backup_on),
             ..AutoBackup::skipped(AutoBackupStatus::NotDue, dry_run, Some(folder))
         });
     }
 
-    let mut names = existing_copies(&folder)?;
-    let keep = settings.backup_keep();
+    usable_folder(&folder)?;
+    let new_name = backup_file_name(&context.clock);
     let in_folder = |name: &String| Path::new(&folder).join(name);
+    let keep = settings.backup_keep();
 
     if dry_run {
-        let new_name = backup_file_name(&context.clock);
-        names.retain(|name| *name != new_name);
-        names.insert(0, new_name.clone());
+        let pruned = beyond(prunable_copies(&folder, database, &new_name)?, keep);
         return Ok(AutoBackup {
             path: Some(in_folder(&new_name)),
-            pruned: beyond(names, keep).iter().map(in_folder).collect(),
+            pruned: pruned.iter().map(in_folder).collect(),
+            next_due_at: next_due_at(&settings, Clock::day_in_peru(context.clock.now_unix())),
             ..AutoBackup::skipped(AutoBackupStatus::WouldCreate, true, Some(folder.clone()))
         });
     }
 
-    let path = run_backup(store, Some(&folder), context).await?;
+    // Only the copy itself reports the folder; recording it reports the store.
+    let path = create_backup(store, &folder, &context.clock)
+        .await
+        .map_err(|error| folder_unavailable(&folder, error))?;
+    let mut settings = settings;
+    settings.record_backup(context.clock.now_unix());
+    store.persist(&settings).await?;
+    let copied_on = Clock::day_in_peru(context.clock.now_unix());
     let mut pruned = Vec::new();
-    for name in beyond(existing_copies(&folder)?, keep) {
+    for name in beyond(prunable_copies(&folder, database, &new_name)?, keep) {
         let old = in_folder(&name);
         fs::remove_file(&old).map_err(|error| {
             AppError::storage(
@@ -216,7 +281,7 @@ pub async fn auto_backup(
     Ok(AutoBackup {
         path: Some(path),
         pruned,
-        next_due_at: store.load().await?.next_backup_due_at(),
+        next_due_at: next_due_at(&settings, copied_on),
         ..AutoBackup::skipped(AutoBackupStatus::Created, false, Some(folder))
     })
 }

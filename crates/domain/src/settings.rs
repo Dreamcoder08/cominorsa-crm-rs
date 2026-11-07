@@ -1,5 +1,7 @@
 use std::future::Future;
 
+use time::{Date, Duration};
+
 use crate::{DomainError, IgvRate, RepositoryError, Ruc, whatsapp};
 
 const DEFAULT_FOLLOW_UP_DAYS: u32 = 3;
@@ -10,7 +12,6 @@ const DEFAULT_BACKUP_INTERVAL_DAYS: u32 = 1;
 const DEFAULT_BACKUP_KEEP: u32 = 14;
 const BACKUP_INTERVAL_DAYS: std::ops::RangeInclusive<u32> = 1..=30;
 const BACKUP_KEEP: std::ops::RangeInclusive<u32> = 1..=90;
-const SECONDS_PER_DAY: i64 = 86_400;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ThemePreference {
@@ -219,25 +220,30 @@ impl Settings {
         self.backup_keep
     }
 
-    /// When the last backup stops being recent enough, in Unix seconds. `None`
-    /// without a folder or before the first backup.
-    pub fn next_backup_due_at(&self) -> Option<i64> {
+    /// The day an automatic backup becomes due after one made on
+    /// `last_backup_on`. `None` without a folder or before the first backup.
+    pub fn next_backup_on(&self, last_backup_on: Option<Date>) -> Option<Date> {
         self.backup_directory.as_ref()?;
-        let interval = i64::from(self.backup_interval_days) * SECONDS_PER_DAY;
+        let interval = Duration::days(i64::from(self.backup_interval_days));
 
-        self.last_backup_at
-            .map(|last| last.saturating_add(interval))
+        last_backup_on.map(|last| last.checked_add(interval).unwrap_or(Date::MAX))
     }
 
-    /// An automatic backup is due when a folder is set and the last backup is
-    /// older than the interval, or there is none yet.
-    pub fn backup_due(&self, now_unix: i64) -> bool {
+    /// An automatic backup is due when a folder is set and `interval` whole
+    /// calendar days have passed since the day of the last backup, whatever
+    /// the hour. A last backup dated after `today` came from a wrong clock and
+    /// never blocks a copy. `last_backup_on` is the day of `last_backup_at` in
+    /// the caller's time zone.
+    pub fn backup_due(&self, today: Date, last_backup_on: Option<Date>) -> bool {
         if self.backup_directory.is_none() {
             return false;
         }
 
-        self.next_backup_due_at()
-            .is_none_or(|due_at| now_unix > due_at)
+        match (last_backup_on, self.next_backup_on(last_backup_on)) {
+            (Some(last), _) if last > today => true,
+            (_, Some(due_on)) => today >= due_on,
+            _ => true,
+        }
     }
 
     /// Trims every field. A RUC, when given, must be valid.

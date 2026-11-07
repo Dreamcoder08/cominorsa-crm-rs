@@ -1,7 +1,7 @@
 use cominorsa_domain::{DomainError, Settings};
+use time::{Date, macros::date};
 
-const DAY: i64 = 86_400;
-const LAST: i64 = 1_772_470_800;
+const TODAY: Date = date!(2026 - 03 - 02);
 
 #[test]
 fn automatic_backups_default_to_daily_keeping_fourteen() {
@@ -64,28 +64,52 @@ fn restores_stored_values_and_falls_back_when_they_are_unreadable() {
 fn no_backup_is_due_without_a_folder() {
     let settings = Settings::default();
 
-    assert!(!settings.backup_due(LAST));
-    assert_eq!(settings.next_backup_due_at(), None);
+    assert!(!settings.backup_due(TODAY, None));
+    assert!(!settings.backup_due(TODAY, Some(date!(2026 - 01 - 01))));
+    assert_eq!(settings.next_backup_on(Some(TODAY)), None);
 }
 
 #[test]
 fn a_first_backup_is_due_as_soon_as_a_folder_is_set() {
     let mut settings = Settings::default();
-    settings.set_backup_directory("copias");
+    settings.set_backup_directory("/media/copias");
 
-    assert!(settings.backup_due(LAST));
-    assert_eq!(settings.next_backup_due_at(), None);
+    assert!(settings.backup_due(TODAY, None));
+    assert_eq!(settings.next_backup_on(None), None);
 }
 
 #[test]
-fn a_backup_is_due_only_when_the_last_one_is_older_than_the_interval() {
+fn a_daily_backup_is_due_on_the_next_calendar_day_whatever_the_hour() {
     let mut settings = Settings::default();
-    settings.set_backup_directory("copias");
-    settings.set_backup_interval_days(2).unwrap();
-    settings.record_backup(LAST);
+    settings.set_backup_directory("/media/copias");
 
-    assert!(!settings.backup_due(LAST + DAY));
-    assert!(!settings.backup_due(LAST + 2 * DAY));
-    assert!(settings.backup_due(LAST + 2 * DAY + 1));
-    assert_eq!(settings.next_backup_due_at(), Some(LAST + 2 * DAY));
+    assert!(!settings.backup_due(TODAY, Some(TODAY)));
+    assert!(settings.backup_due(date!(2026 - 03 - 03), Some(TODAY)));
+    assert_eq!(
+        settings.next_backup_on(Some(TODAY)),
+        Some(date!(2026 - 03 - 03))
+    );
+}
+
+#[test]
+fn a_backup_is_due_once_the_interval_in_whole_days_has_passed() {
+    let mut settings = Settings::default();
+    settings.set_backup_directory("/media/copias");
+    settings.set_backup_interval_days(2).unwrap();
+
+    assert!(!settings.backup_due(TODAY, Some(TODAY)));
+    assert!(!settings.backup_due(date!(2026 - 03 - 03), Some(TODAY)));
+    assert!(settings.backup_due(date!(2026 - 03 - 04), Some(TODAY)));
+    assert_eq!(
+        settings.next_backup_on(Some(TODAY)),
+        Some(date!(2026 - 03 - 04))
+    );
+}
+
+#[test]
+fn a_last_backup_dated_after_today_never_blocks_a_copy() {
+    let mut settings = Settings::default();
+    settings.set_backup_directory("/media/copias");
+
+    assert!(settings.backup_due(TODAY, Some(date!(2099 - 01 - 01))));
 }

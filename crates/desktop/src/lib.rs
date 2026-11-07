@@ -110,10 +110,10 @@ pub async fn open_database(path: &Path) -> Result<SqliteLeads, String> {
         .map_err(|error| error.to_string())
 }
 
-/// Runs the automatic backup use case once, as the app does after it opens,
-/// and returns what Settings shows about it.
-pub async fn startup_backup(store: &SqliteLeads) -> String {
-    auto_backup_label(&auto_backup(store, &Context::system(), false).await)
+/// Runs the automatic backup use case once on `database`, as the app does
+/// after it opens it, and returns what Settings shows about it.
+pub async fn startup_backup(store: &SqliteLeads, database: &Path) -> String {
+    auto_backup_label(&auto_backup(store, database, &Context::system(), false).await)
 }
 
 /// What a person changed on one case step.
@@ -211,7 +211,11 @@ pub fn App() -> Element {
                 form.set(new_form());
                 // The window is already usable; the copy reports when it ends.
                 spawn(async move {
-                    auto_backup_notice.set(startup_backup(&backup_store).await);
+                    let notice = match database_path() {
+                        Ok(database) => startup_backup(&backup_store, &database).await,
+                        Err(error) => error,
+                    };
+                    auto_backup_notice.set(notice);
                     if let Ok(saved) = backup_store.load().await
                         && saved.last_backup_at() != settings.read().last_backup_at()
                     {

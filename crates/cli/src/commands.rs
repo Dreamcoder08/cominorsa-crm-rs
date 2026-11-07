@@ -790,7 +790,7 @@ async fn automatic_backup(path: &Path, dry_run: bool, context: &Context) -> Resu
     } else {
         open_for_writing(path).await?
     };
-    let outcome = auto_backup(&store, context, dry_run).await;
+    let outcome = auto_backup(&store, path, context, dry_run).await;
     store.close().await;
     let outcome = outcome?;
     let text = match (&outcome.status, &outcome.path) {

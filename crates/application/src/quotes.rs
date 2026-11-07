@@ -489,7 +489,9 @@ fn is_same_file(left: &Path, right: &Path) -> bool {
     }
 }
 
-fn is_database_file(path: &Path, database: &Path) -> bool {
+/// Whether `path` is `database` or one of its sidecars, by canonical path or
+/// by file identity, whatever name reaches it.
+pub(crate) fn is_database_file(path: &Path, database: &Path) -> bool {
     let wanted = resolved(path);
 
     ["", "-wal", "-shm", "-journal"].iter().any(|suffix| {

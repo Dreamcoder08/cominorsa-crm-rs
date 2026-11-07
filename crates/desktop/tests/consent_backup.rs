@@ -5,7 +5,8 @@ use std::{env, fs, path::PathBuf};
 
 use cominorsa_application::{AppError, AutoBackup, AutoBackupStatus};
 use cominorsa_desktop::{
-    FormValues, LeadForm, SaveState, SettingsView, Workspace, auto_backup_label, startup_backup,
+    Agenda, FormValues, LeadForm, SaveState, SettingsView, Workspace, auto_backup_label,
+    startup_backup,
 };
 use cominorsa_domain::{Lead, LeadOrigin, NewLead, Settings, SettingsRepository};
 use cominorsa_storage::SqliteLeads;
@@ -69,6 +70,47 @@ fn the_whatsapp_button_refuses_without_consent_with_its_code() {
     assert!(html.contains("Sin consentimiento"), "{html}");
     assert!(html.contains("Registrar consentimiento"), "{html}");
     assert!(html.contains("Referido"), "{html}");
+}
+
+fn agenda_without_consent() -> Element {
+    rsx! {
+        Agenda {
+            leads: vec![received("Referida", LeadOrigin::Referral)],
+            today: TODAY,
+            whatsapp_template: "Hola {nombre}".to_owned(),
+            on_open_pipeline: |_| {},
+        }
+    }
+}
+
+fn agenda_with_consent() -> Element {
+    rsx! {
+        Agenda {
+            leads: vec![received("Entrante", LeadOrigin::WebForm)],
+            today: TODAY,
+            whatsapp_template: "Hola {nombre}".to_owned(),
+            on_open_pipeline: |_| {},
+        }
+    }
+}
+
+/// Neither the board nor the agenda prepares a chat link or shows the prepared
+/// message for a lead without consent; the same lead with consent gets both.
+#[test]
+fn the_whatsapp_link_and_its_message_are_refused_without_consent() {
+    for html in [render(without_consent), render(agenda_without_consent)] {
+        assert!(html.contains("Referida"), "{html}");
+        assert!(!html.contains("wa.me"), "{html}");
+        assert!(!html.contains("text="), "{html}");
+        assert!(!html.contains("Hola%20Referida"), "{html}");
+        assert!(!html.contains("Hola Referida"), "{html}");
+    }
+    for html in [render(with_consent), render(agenda_with_consent)] {
+        assert!(
+            html.contains("https://wa.me/51900000000?text=Hola%20Entrante"),
+            "{html}"
+        );
+    }
 }
 
 #[test]
@@ -199,12 +241,13 @@ async fn startup_makes_the_due_copy_through_the_use_case() {
     let folder = scratch.0.join("copias");
     fs::create_dir_all(&folder).unwrap();
     fs::write(folder.join("notas.txt"), "no es una copia").unwrap();
-    let store = SqliteLeads::open(&scratch.0.join("crm.db")).await.unwrap();
+    let database = scratch.0.join("crm.db");
+    let store = SqliteLeads::open(&database).await.unwrap();
     let mut settings = store.load().await.unwrap();
     settings.set_backup_directory(&folder.display().to_string());
     store.persist(&settings).await.unwrap();
 
-    let label = startup_backup(&store).await;
+    let label = startup_backup(&store, &database).await;
 
     assert!(label.starts_with("Copia automática creada en "), "{label}");
     assert_eq!(fs::read_dir(&folder).unwrap().count(), 2);
@@ -214,7 +257,7 @@ async fn startup_makes_the_due_copy_through_the_use_case() {
     );
     assert!(store.load().await.unwrap().last_backup_at().is_some());
     assert_eq!(
-        startup_backup(&store).await,
+        startup_backup(&store, &database).await,
         "Copia automática: la última copia es reciente"
     );
     store.close().await;

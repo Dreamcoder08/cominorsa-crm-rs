@@ -7,7 +7,7 @@ use cominorsa_domain::{
     DomainError, Lead, LeadRecord, QuoteDraft,
 };
 use time::{
-    Date, OffsetDateTime, Time, UtcOffset,
+    Date, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset,
     format_description::BorrowedFormatItem,
     macros::{format_description, offset},
 };
@@ -70,6 +70,23 @@ impl Clock {
 
     pub fn now_unix(&self) -> i64 {
         self.now_unix
+    }
+
+    /// The day in Peru of an instant in Unix seconds.
+    pub fn day_in_peru(unix_seconds: i64) -> Option<Date> {
+        OffsetDateTime::from_unix_timestamp(unix_seconds)
+            .ok()
+            .map(|moment| moment.to_offset(PERU).date())
+    }
+
+    /// The first second of `day` in Peru, in Unix seconds.
+    pub fn start_of_day_in_peru(day: Date) -> i64 {
+        day.midnight().assume_offset(PERU).unix_timestamp()
+    }
+
+    /// Whether `stamp` is a real instant written like `file_stamp`.
+    pub(crate) fn is_file_stamp(stamp: &str) -> bool {
+        PrimitiveDateTime::parse(stamp, FILE_STAMP).is_ok()
     }
 
     /// The instant in Peru time, for file names.

@@ -157,6 +157,18 @@ pub fn run(db: &Path, args: &[&str]) -> Output {
     run_on(db, TODAY, args)
 }
 
+/// Runs from `folder`, to prove what a relative path would reach.
+pub fn run_in(folder: &Path, db: &Path, args: &[&str]) -> Output {
+    binary()
+        .current_dir(folder)
+        .arg("--db")
+        .arg(db)
+        .args(["--json", "--today", TODAY])
+        .args(args)
+        .output()
+        .unwrap()
+}
+
 pub fn seeded(db: &Path, seed: &str, args: &[&str]) -> Output {
     binary()
         .arg("--db")

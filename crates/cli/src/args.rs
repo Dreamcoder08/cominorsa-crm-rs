@@ -356,6 +356,7 @@ pub struct SettingsArgs {
     /// Tasa en porcentaje, como 18
     #[arg(long, value_name = "TASA")]
     pub igv: Option<String>,
+    /// Carpeta de las copias; `backup auto` exige una ruta completa
     #[arg(long, value_name = "CARPETA")]
     pub backup_directory: Option<String>,
     /// Días entre copias automáticas, de 1 a 30
@@ -389,8 +390,9 @@ pub enum BackupCommand {
         #[arg(long, value_name = "CARPETA")]
         folder: Option<String>,
     },
-    /// Copia la base en la carpeta guardada si la última copia es más antigua que el
-    /// intervalo, y borra solo las copias más viejas de esta aplicación en esa carpeta
+    /// Copia la base en la carpeta guardada (ruta completa) si pasaron los días del
+    /// intervalo desde el día de la última copia, y borra solo las copias más viejas
+    /// de esta aplicación en esa carpeta, nunca la copia nueva ni la base en uso
     Auto {
         /// Informa qué haría sin escribir ni borrar nada
         #[arg(long)]
