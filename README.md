@@ -37,7 +37,7 @@ scripts/e2e-cli.sh
 
 | Group | Commands |
 |---|---|
-| State | `status`, `export`, `agenda` |
+| State | `status`, `export`, `agenda`, `migrate` |
 | `lead` | `add`, `list`, `show`, `summary`, `advance`, `assign`, `whatsapp` |
 | `prospect` | `import`, `enrich`, `search`, `count`, `convert` |
 | `case` | `list`, `show`, `close` |
@@ -47,7 +47,7 @@ scripts/e2e-cli.sh
 | `settings` | `show`, `set` |
 | `backup` | `create`, `restore` |
 
-The database path is mandatory, through `--db` or `COMINORSA_DB_PATH`; the CLI has no default location, so it cannot reach the app's real data by accident. A command that only reads refuses a database that does not exist instead of creating it.
+The database path is mandatory, through `--db` or `COMINORSA_DB_PATH`; the CLI has no default location, so it cannot reach the app's real data by accident. A command that only reads opens the file read-only: it never creates or migrates a database. On an older schema it fails with `schema_outdated`, which names both versions and `cominorsa migrate`; on a newer one it fails with `schema_newer`. SQLite may leave an empty `-wal` and a `-shm` file beside the database after a read; the database file itself does not change. `migrate` copies the database beside itself first, and it is the explicit way to upgrade. Commands that write migrate on open, as the app does.
 
 | Exit code | Meaning |
 |---|---|
@@ -65,9 +65,9 @@ Output is Spanish for people. With `--json`, stdout holds one document on succes
 
 JSON keys and error codes are stable and in English. Dates are ISO 8601, money is integer cents, and enums use their stored codes. Quotes accept their number, such as `COT-2026-0001-V2`, or their id.
 
-For reproducible runs, `--today <AAAA-MM-DD>` fixes the day, `--now <seconds>` fixes the instant, and `--id-seed <text>` derives new ids from the text. A day alone means noon in Peru. Use a different seed per command: repeating a seed for the same lead changes nothing, and reusing it for other data is refused. Without these flags the CLI uses the system clock and the domain's generated ids, like the app. Quote ids are the exception: the domain has no way to inject them yet, so compare quotes by number.
+For reproducible runs, `--today <AAAA-MM-DD>` fixes the day, `--now <seconds>` fixes the instant, and `--id-seed <text>` derives new ids from the text. A day alone means noon in Peru. Use a different seed per command: repeating a seed for the same lead changes nothing, and reusing it for other data is refused. Without these flags the CLI uses the system clock and the domain's generated ids, like the app. Two runs of the same commands with the same flags give byte-identical exports, as long as stored paths such as the backup folder match.
 
-`export` returns `leads`, `cases`, `quotes`, `prospects`, and `settings` in a stable order. `status` returns `counts`.
+`export` returns `schema_version`, `leads`, `cases`, `quotes`, `quote_counters`, `prospects`, and `settings` in a stable order, including closed cases with nothing left to collect. `status` returns `schema_version`, `integrity_check`, and `counts`.
 
 ## App icon
 
@@ -127,7 +127,6 @@ Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adap
 | Quotes | Not tax documents. The 18% IGV default, the 15-day suggested validity, and whole-number quantities are unvalidated assumptions; marking a quote sent does not move the lead's stage |
 | Billing | Tracks collections only; it does not issue tax invoices or receipts. The 30 / 40 / 30 split comes from an unvalidated example |
 | Renewals | Only DAC suggests a renewal, 12 months after closing, pending client validation; a service naming DAC with others renews as a whole. A closed case with unpaid milestones stays listed until they are paid |
-| CLI state | `status` reports `schema_version` and `integrity_check` as `null`, and `export` leaves out closed cases with nothing to collect and the yearly quote counters: the storage adapter exposes neither yet. Those cases also answer `case_not_active` to `case show` and to a repeated `case close`. A read on a database with an older schema migrates it first, as opening the app does |
 | Follow-up alerts | Visible only while the app is open |
 | Leads from the website or WhatsApp | Registered manually; there is no automatic intake |
 | Prospects | Concession titleholders without phone, RUC, or email; potential service is inferred, not verified |
@@ -143,4 +142,4 @@ Measured on Linux with WebKitGTK and an empty database. The memory figure predat
 
 - Never commit customer data, credentials, or real exports. Fixtures are synthetic.
 - Write a failing test before each behavior change.
-- Run `scripts/check.sh` before committing. It runs `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, the workspace tests (with cargo-nextest when installed), and `scripts/e2e-cli.sh`, which needs `jq` and fails without it. `scripts/check.sh --full` also runs `cargo deny check` and reports the release binary size; it exits with status 2 when cargo-deny is missing.
+- Run `scripts/check.sh` before committing. It runs `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, the workspace tests (with cargo-nextest when installed), and `scripts/e2e-cli.sh`, which needs `jq` and `sqlite3` and fails without them. `scripts/check.sh --full` also runs `cargo deny check` and reports the release binary size; it exits with status 2 when cargo-deny is missing.

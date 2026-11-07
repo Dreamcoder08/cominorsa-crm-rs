@@ -4,7 +4,7 @@
 
 use cominorsa_domain::{
     BillingMilestone, BillingMilestoneRecord, Case, CaseFile, CaseRecord, CaseStep, CaseStepRecord,
-    DomainError, Lead, LeadRecord,
+    DomainError, Lead, LeadRecord, QuoteDraft,
 };
 use time::{
     Date, OffsetDateTime, Time, UtcOffset,
@@ -133,6 +133,13 @@ impl Ids {
             follow_up_on: lead.follow_up_on(),
             renewal_of: lead.renewal_of(),
         })
+    }
+
+    pub(crate) fn quote(&mut self, draft: QuoteDraft) -> QuoteDraft {
+        match self.issue() {
+            Some(id) => draft.with_id(id),
+            None => draft,
+        }
     }
 
     pub(crate) fn opening(&mut self, opening: CaseFile) -> Result<CaseFile, DomainError> {

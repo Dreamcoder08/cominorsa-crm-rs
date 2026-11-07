@@ -63,10 +63,12 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Muestra cuántos registros hay guardados
+    /// Muestra la versión del esquema, la integridad y cuántos registros hay
     Status,
-    /// Exporta el estado en JSON, sin cambiar nada
+    /// Exporta todo el estado en JSON, sin cambiar nada
     Export,
+    /// Actualiza el esquema de la base, tras guardar una copia a su lado
+    Migrate,
     /// Muestra seguimientos, trámites y cobros vencidos o próximos
     Agenda,
     /// Registra, consulta y avanza leads
@@ -182,7 +184,7 @@ pub enum ProspectCommand {
 pub enum CaseCommand {
     /// Lista los expedientes abiertos y los cerrados con cobros pendientes
     List,
-    /// Muestra un expediente con sus pasos y cobros
+    /// Muestra un expediente con sus pasos y cobros, aunque esté cerrado
     Show { id: Uuid },
     /// Cierra un expediente; un servicio recurrente crea un lead de renovación
     Close { id: Uuid },

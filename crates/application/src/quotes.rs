@@ -10,6 +10,7 @@ use time::{Date, Duration, format_description::well_known::Iso8601};
 use uuid::Uuid;
 
 use crate::{
+    context::{Context, Ids},
     error::AppError,
     presentation::{accepted_notice, money_input},
     quote_pdf::{quote_pdf, write_pdf},
@@ -224,20 +225,51 @@ pub struct SavedQuote {
     pub notice: String,
 }
 
-/// Runs one action of the quote panel against the stored quotes and settings.
-pub async fn save_quote_edit<R>(
+/// A seeded id can repeat. The same request then returns the stored quote and
+/// uses no number; the same id with other content is refused.
+fn refuse_foreign_repeat(draft: &QuoteDraft, quotes: &[Quote]) -> Result<(), AppError> {
+    let stored = quotes.iter().find(|quote| quote.id() == draft.id());
+    let Some(stored) = stored.filter(|_| draft.revised_quote().is_none()) else {
+        return Ok(());
+    };
+    let requested = draft.clone().numbered(stored.number());
+    let same = stored.lead_id() == requested.lead_id()
+        && stored.issued_on() == requested.issued_on()
+        && stored.valid_until() == requested.valid_until()
+        && stored.notes() == requested.notes()
+        && stored.lines() == requested.lines();
+
+    if same {
+        Ok(())
+    } else {
+        Err(AppError::rejected(
+            "id_conflict",
+            "Ese identificador ya pertenece a otra cotización",
+        ))
+    }
+}
+
+async fn save_edit<R>(
     repository: &R,
     lead: &Lead,
     edit: QuoteEdit,
     values: &QuoteValues,
     today: Date,
+    ids: &mut Ids,
 ) -> Result<SavedQuote, AppError>
 where
     R: QuoteRepository + SettingsRepository + CaseRepository,
 {
     let quotes = repository.quotes().await?;
     let settings = repository.load().await?;
-    let change = quote_change(lead, edit.clone(), values, &quotes, &settings, today)?;
+    let change = match quote_change(lead, edit.clone(), values, &quotes, &settings, today)? {
+        QuoteChange::Create(draft) => {
+            let draft = ids.quote(draft);
+            refuse_foreign_repeat(&draft, &quotes)?;
+            QuoteChange::Create(draft)
+        }
+        change => change,
+    };
     let case_is_open = repository
         .active_cases()
         .await?
@@ -247,6 +279,22 @@ where
     let notice = quote_notice(&edit, &quote, case_is_open);
 
     Ok(SavedQuote { quote, notice })
+}
+
+/// Runs one action of the quote panel against the stored quotes and settings.
+pub async fn save_quote_edit<R>(
+    repository: &R,
+    lead: &Lead,
+    edit: QuoteEdit,
+    values: &QuoteValues,
+    context: &mut Context,
+) -> Result<SavedQuote, AppError>
+where
+    R: QuoteRepository + SettingsRepository + CaseRepository,
+{
+    let today = context.clock.today();
+
+    save_edit(repository, lead, edit, values, today, &mut context.ids).await
 }
 
 /// Marks a quote sent. The panel asks before sending without a company name,
@@ -269,12 +317,13 @@ where
         ));
     }
 
-    save_quote_edit(
+    save_edit(
         repository,
         lead,
         QuoteEdit::Send(quote),
         &QuoteValues::default(),
         today,
+        &mut Ids::generated(),
     )
     .await
 }

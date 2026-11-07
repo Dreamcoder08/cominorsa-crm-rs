@@ -203,13 +203,13 @@ pub fn agenda(groups: &AgendaGroups, today: Date) -> Value {
     })
 }
 
-/// `schema_version` and `integrity_check` stay null until storage exposes them.
 pub fn status(status: &Status) -> Value {
     json!({
-        "schema_version": null,
-        "integrity_check": null,
+        "schema_version": status.schema_version,
+        "integrity_check": status.integrity_check,
         "counts": {
             "leads": status.leads,
+            "cases": status.cases,
             "active_cases": status.active_cases,
             "case_steps": status.case_steps,
             "billing_milestones": status.billing_milestones,
@@ -221,10 +221,18 @@ pub fn status(status: &Status) -> Value {
 }
 
 pub fn snapshot(state: &Snapshot) -> Value {
+    let counters: Vec<Value> = state
+        .quote_counters
+        .iter()
+        .map(|counter| json!({"year": counter.year, "last_sequence": counter.last_sequence}))
+        .collect();
+
     json!({
+        "schema_version": state.schema_version,
         "leads": state.leads.iter().map(lead).collect::<Vec<_>>(),
         "cases": state.cases.iter().map(case).collect::<Vec<_>>(),
         "quotes": state.quotes.iter().map(quote).collect::<Vec<_>>(),
+        "quote_counters": counters,
         "prospects": state.prospects.iter().map(prospect).collect::<Vec<_>>(),
         "settings": settings(&state.settings),
     })

@@ -22,12 +22,14 @@ pub use billing::{
     parse_milestone_date, save_billing,
 };
 pub use cases::{
-    CaseClosing, agenda, close_case, find_case, find_step, parse_step_date, reschedule_step,
-    save_close, set_step_done, toggled_step,
+    CaseClosing, agenda, close_case, find_case, find_step, find_stored_case, parse_step_date,
+    reschedule_step, save_close, set_step_done, toggled_step,
 };
 pub use context::{Clock, Context, Ids, today_in_peru};
 pub use error::{AppError, ErrorKind};
-pub use inspect::{Snapshot, Status, snapshot, status};
+pub use inspect::{
+    Migration, Snapshot, Status, migrate_database, open_for_reading, snapshot, status,
+};
 pub use leads::{
     Advance, FormValues, NewLeadOutcome, add_lead, advance_lead, assign_lead, find_lead,
     parse_form, save_advance,

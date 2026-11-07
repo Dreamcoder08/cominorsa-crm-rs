@@ -475,21 +475,24 @@ fn the_injected_day_decides_default_dates() {
     assert_eq!(data(&output)["lead"]["follow_up_on"], "2026-03-05");
 }
 
-/// Quote ids cannot be injected yet, so runs compare on quote numbers.
-fn without_quote_ids(mut state: Value) -> Value {
-    for quote in state["quotes"].as_array_mut().unwrap() {
-        quote["id"] = Value::Null;
-    }
-    state
-}
-
 #[test]
-fn the_same_commands_give_the_same_state() {
+fn the_same_commands_give_byte_identical_exports() {
     let (one, two) = (Scratch::new(), Scratch::new());
     let flow = |db: &Path| {
         name_company(db);
         let (lead, _) = signed(db, "flow", "DAC");
-        quote(db, &lead);
+        let case = first_case(db);
+        let create = [
+            "--id-seed",
+            "quote",
+            "quote",
+            "create",
+            "--lead",
+            &lead,
+            "--line",
+            "A|2|100",
+        ];
+        data(&run(db, &create));
         data(&run(
             db,
             &[
@@ -497,21 +500,44 @@ fn the_same_commands_give_the_same_state() {
                 "total",
                 "billing",
                 "total",
-                &first_case(db),
+                &case,
                 "--amount",
                 "1000",
             ],
         ));
-        data(&run(
-            db,
-            &["--id-seed", "plan", "billing", "plan", &first_case(db)],
-        ));
-        export(db)
+        data(&run(db, &["--id-seed", "plan", "billing", "plan", &case]));
+        data(&run(db, &["--id-seed", "close", "case", "close", &case]));
+        stdout(&run(db, &["export"]))
     };
 
+    assert_eq!(flow(&one.db()), flow(&two.db()));
+}
+
+#[test]
+fn repeating_a_seeded_quote_uses_no_number() {
+    let scratch = Scratch::new();
+    let lead = add_lead(&scratch.db(), "l", "Lead", "DAC");
+    let args = [
+        "--id-seed",
+        "q",
+        "quote",
+        "create",
+        "--lead",
+        &lead,
+        "--line",
+        "Estudio|1|100",
+    ];
+
+    let first = data(&run(&scratch.db(), &args));
+    let state = export(&scratch.db());
+    let repeat = data(&run(&scratch.db(), &args));
+
+    assert_eq!(repeat["quote"]["id"], first["quote"]["id"]);
+    assert_eq!(repeat["quote"]["number"], "COT-2026-0001");
+    assert_eq!(export(&scratch.db()), state);
     assert_eq!(
-        without_quote_ids(flow(&one.db())),
-        without_quote_ids(flow(&two.db()))
+        state["quote_counters"],
+        json!([{"year": 2026, "last_sequence": 1}])
     );
 }
 
@@ -522,17 +548,19 @@ fn first_case(db: &Path) -> String {
 // Status and export.
 
 #[test]
-fn status_reports_counts_and_says_what_it_cannot_see() {
+fn status_reports_the_schema_integrity_and_counts() {
     let scratch = Scratch::new();
-    signed(&scratch.db(), "s", "DAC");
+    let (_, case) = signed(&scratch.db(), "s", "REINFO");
+    data(&run(&scratch.db(), &["case", "close", text(&case["id"])]));
 
     let found = data(&run(&scratch.db(), &["status"]));
 
+    assert_eq!(found["schema_version"], 8);
+    assert_eq!(found["integrity_check"], "ok");
     assert_eq!(found["counts"]["leads"], 1);
-    assert_eq!(found["counts"]["active_cases"], 1);
+    assert_eq!(found["counts"]["cases"], 1);
+    assert_eq!(found["counts"]["active_cases"], 0);
     assert!(found["counts"]["case_steps"].as_u64().unwrap() > 0);
-    assert_eq!(found["schema_version"], Value::Null);
-    assert_eq!(found["integrity_check"], Value::Null);
 }
 
 #[test]
@@ -551,7 +579,15 @@ fn export_is_stable_between_reads() {
             .unwrap()
             .keys()
             .collect::<Vec<_>>(),
-        ["cases", "leads", "prospects", "quotes", "settings"]
+        [
+            "cases",
+            "leads",
+            "prospects",
+            "quote_counters",
+            "quotes",
+            "schema_version",
+            "settings"
+        ]
     );
 }
 
@@ -905,6 +941,122 @@ fn closing_a_one_off_case_creates_no_lead() {
 
     assert_eq!(closed["renewal"], Value::Null);
     assert_eq!(export(&scratch.db())["leads"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn a_settled_case_can_be_shown_and_closing_it_again_changes_nothing() {
+    let scratch = Scratch::new();
+    let (_, case) = signed(&scratch.db(), "s", "DAC");
+    let id = text(&case["id"]);
+    data(&run(
+        &scratch.db(),
+        &["--id-seed", "close", "case", "close", id],
+    ));
+    let state = export(&scratch.db());
+
+    let shown = data(&run(&scratch.db(), &["case", "show", id]));
+    let repeat = data(&run(
+        &scratch.db(),
+        &["--id-seed", "again", "case", "close", id],
+    ));
+    let listed = data(&run(&scratch.db(), &["case", "list"]));
+
+    assert_eq!(shown["case"]["status"], "closed");
+    assert_eq!(state["cases"][0]["status"], "closed");
+    assert_eq!(repeat, json!({"closed": false, "renewal": null}));
+    assert_eq!(listed["cases"], json!([]));
+    assert_eq!(export(&scratch.db()), state);
+}
+
+#[test]
+fn an_unknown_case_is_a_rejection() {
+    let scratch = Scratch::new();
+    add_lead(&scratch.db(), "a", "Lead", "DAC");
+    let nil = Uuid::nil().to_string();
+
+    assert_eq!(
+        failure(&run(&scratch.db(), &["case", "show", &nil]), 1).0,
+        "case_not_found"
+    );
+    assert_eq!(
+        failure(&run(&scratch.db(), &["case", "close", &nil]), 1).0,
+        "case_not_found"
+    );
+}
+
+// Read commands never write.
+
+#[test]
+fn reads_leave_the_database_file_byte_identical() {
+    let scratch = Scratch::new();
+    let (companies, people) = write_csv(&scratch);
+    let import = [
+        "prospect",
+        "import",
+        "--companies",
+        &companies,
+        "--people",
+        &people,
+    ];
+    data(&run(&scratch.db(), &import));
+    let (lead, case) = signed(&scratch.db(), "s", "DAC");
+    quote(&scratch.db(), &lead);
+    let case = text(&case["id"]);
+    let pdf = scratch.file("lectura.pdf");
+    let before = fs::read(scratch.db()).unwrap();
+
+    for command in [
+        vec!["status"],
+        vec!["export"],
+        vec!["agenda"],
+        vec!["lead", "list"],
+        vec!["lead", "show", &lead],
+        vec!["lead", "summary"],
+        vec!["lead", "whatsapp", &lead],
+        vec!["prospect", "search", "--query", "piura"],
+        vec!["prospect", "count"],
+        vec!["case", "list"],
+        vec!["case", "show", case],
+        vec!["quote", "list"],
+        vec!["quote", "show", "COT-2026-0001"],
+        vec![
+            "quote",
+            "pdf",
+            "COT-2026-0001",
+            "--out",
+            pdf.to_str().unwrap(),
+        ],
+        vec!["settings", "show"],
+    ] {
+        data(&run(&scratch.db(), &command));
+        assert_eq!(fs::read(scratch.db()).unwrap(), before, "{command:?} wrote");
+    }
+}
+
+#[test]
+fn migrating_a_current_database_reports_no_change() {
+    let scratch = Scratch::new();
+    add_lead(&scratch.db(), "a", "Lead", "DAC");
+    let before = fs::read(scratch.db()).unwrap();
+
+    let found = data(&run(&scratch.db(), &["migrate"]));
+
+    assert_eq!(
+        found,
+        json!({"changed": false, "from": 8, "to": 8, "safety_copy": null})
+    );
+    assert_eq!(fs::read(scratch.db()).unwrap(), before);
+}
+
+#[test]
+fn migrating_a_missing_database_creates_nothing() {
+    let scratch = Scratch::new();
+
+    assert_eq!(
+        failure(&run(&scratch.db(), &["migrate"]), 3).0,
+        "database_not_found"
+    );
+    assert!(!scratch.db().exists());
 }
 
 // Billing.

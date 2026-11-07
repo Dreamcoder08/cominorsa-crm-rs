@@ -1,47 +1,143 @@
-//! Read-only views of the stored state, for assertions and diagnosis.
+//! Read-only views of the stored state, for assertions and diagnosis. These
+//! name the SQLite adapter because schema, integrity, and counters have no port.
+
+use std::path::{Path, PathBuf};
 
 use cominorsa_domain::{
-    CaseFile, CaseRepository, Lead, LeadRepository, Prospect, ProspectRepository, Quote,
-    QuoteRepository, Settings, SettingsRepository,
+    CaseFile, Lead, LeadRepository, Prospect, ProspectRepository, Quote, QuoteRepository, Settings,
+    SettingsRepository,
 };
+use cominorsa_storage::{QuoteCounter, SqliteLeads};
 
-use crate::error::AppError;
+use crate::{cases::is_active, context::Clock, error::AppError};
 
-/// What the repository ports can see, in a stable order.
-///
-/// `cases` holds open cases and closed ones that still owe money. Closed cases
-/// with nothing to collect and the yearly quote counters have no read port.
+fn not_found(path: &Path) -> AppError {
+    AppError::storage(
+        "database_not_found",
+        format!("No existe la base de datos {}", path.display()),
+    )
+}
+
+fn newer_schema(found: i64, required: i64) -> AppError {
+    AppError::storage(
+        "schema_newer",
+        format!(
+            "La base está en la versión {found}, más nueva que la {required} que admite este programa. Actualiza el programa"
+        ),
+    )
+}
+
+/// Opens a database to read it. It is never created or migrated: a schema that
+/// does not match is an error that names the upgrade.
+pub async fn open_for_reading(path: &Path) -> Result<SqliteLeads, AppError> {
+    if !path.exists() {
+        return Err(not_found(path));
+    }
+
+    let store = SqliteLeads::open_read_only(path).await?;
+    let found = store.schema_version().await?;
+    let required = SqliteLeads::required_schema_version();
+
+    if found == required {
+        return Ok(store);
+    }
+    store.close().await;
+
+    Err(if found < required {
+        AppError::storage(
+            "schema_outdated",
+            format!(
+                "La base está en la versión {found} y este programa necesita la {required}. Actualízala con: cominorsa migrate"
+            ),
+        )
+    } else {
+        newer_schema(found, required)
+    })
+}
+
+/// What `migrate_database` did. `safety_copy` holds the previous data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Migration {
+    pub from: i64,
+    pub to: i64,
+    pub changed: bool,
+    pub safety_copy: Option<PathBuf>,
+}
+
+/// Brings a database to the required schema, after copying it beside itself.
+/// A database that is already current is not touched.
+pub async fn migrate_database(path: &Path, clock: &Clock) -> Result<Migration, AppError> {
+    if !path.exists() {
+        return Err(not_found(path));
+    }
+
+    let reader = SqliteLeads::open_read_only(path).await?;
+    let from = reader.schema_version().await?;
+    let to = SqliteLeads::required_schema_version();
+
+    if from > to {
+        reader.close().await;
+        return Err(newer_schema(from, to));
+    }
+    if from == to {
+        reader.close().await;
+        return Ok(Migration {
+            from,
+            to,
+            changed: false,
+            safety_copy: None,
+        });
+    }
+
+    let safety_copy = path.with_extension(format!("antes-de-migrar-{}.db", clock.file_stamp()));
+    reader.backup_to(&safety_copy).await?;
+    reader.close().await;
+    SqliteLeads::open(path).await?.close().await;
+
+    Ok(Migration {
+        from,
+        to,
+        changed: true,
+        safety_copy: Some(safety_copy),
+    })
+}
+
+/// Everything stored, in a stable order, to compare full state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
+    pub schema_version: i64,
     pub leads: Vec<Lead>,
     pub cases: Vec<CaseFile>,
     pub quotes: Vec<Quote>,
+    pub quote_counters: Vec<QuoteCounter>,
     pub prospects: Vec<Prospect>,
     pub settings: Settings,
 }
 
-pub async fn snapshot<R>(repository: &R) -> Result<Snapshot, AppError>
-where
-    R: LeadRepository + CaseRepository + QuoteRepository + ProspectRepository + SettingsRepository,
-{
-    let mut prospects = repository.search("", u32::MAX).await?;
+pub async fn snapshot(store: &SqliteLeads) -> Result<Snapshot, AppError> {
+    let mut prospects = store.search("", u32::MAX).await?;
     prospects.sort_by(|left, right| {
         (left.kind.code(), &left.name).cmp(&(right.kind.code(), &right.name))
     });
 
     Ok(Snapshot {
-        leads: repository.list().await?,
-        cases: repository.active_cases().await?,
-        quotes: repository.quotes().await?,
+        schema_version: store.schema_version().await?,
+        leads: store.list().await?,
+        cases: store.all_cases().await?,
+        quotes: store.quotes().await?,
+        quote_counters: store.quote_counters().await?,
         prospects,
-        settings: repository.load().await?,
+        settings: store.load().await?,
     })
 }
 
-/// Counts of the stored records the ports can see.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// The health of the database and how much it holds.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Status {
+    pub schema_version: i64,
+    pub integrity_check: String,
     pub leads: usize,
+    pub cases: usize,
     pub active_cases: usize,
     pub case_steps: usize,
     pub billing_milestones: usize,
@@ -50,19 +146,19 @@ pub struct Status {
     pub team_members: usize,
 }
 
-pub async fn status<R>(repository: &R) -> Result<Status, AppError>
-where
-    R: LeadRepository + CaseRepository + QuoteRepository + ProspectRepository + SettingsRepository,
-{
-    let cases = repository.active_cases().await?;
+pub async fn status(store: &SqliteLeads) -> Result<Status, AppError> {
+    let cases = store.all_cases().await?;
 
     Ok(Status {
-        leads: repository.list().await?.len(),
-        active_cases: cases.len(),
+        schema_version: store.schema_version().await?,
+        integrity_check: store.integrity_check().await?,
+        leads: store.list().await?.len(),
+        cases: cases.len(),
+        active_cases: cases.iter().filter(|file| is_active(file)).count(),
         case_steps: cases.iter().map(|file| file.steps.len()).sum(),
         billing_milestones: cases.iter().map(|file| file.milestones.len()).sum(),
-        quotes: repository.quotes().await?.len(),
-        prospects: repository.count().await?,
-        team_members: repository.load().await?.team().len(),
+        quotes: store.quotes().await?.len(),
+        prospects: store.count().await?,
+        team_members: store.load().await?.team().len(),
     })
 }

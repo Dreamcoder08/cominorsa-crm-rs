@@ -10,9 +10,10 @@ use cominorsa_application::{
     PipelineSummary, ProspectConversion, QuoteEdit, QuoteLineValues, QuoteValues, SettingsChange,
     add_lead, advance_lead, agenda, apply_billing, assign_lead, billing_change, close_case,
     close_warning, closing_notice, convert_prospect, find_case, find_lead, find_milestone,
-    find_quote, lead_quotes, matches_query, milestone_gap_warning, next_follow_up, reschedule_step,
-    restore_backup, run_backup, save_billing, save_quote_edit, save_quote_pdf, send_quote,
-    set_step_done, snapshot, status, suggested_total_note, update_settings,
+    find_quote, find_stored_case, lead_quotes, matches_query, migrate_database,
+    milestone_gap_warning, next_follow_up, open_for_reading, reschedule_step, restore_backup,
+    run_backup, save_billing, save_quote_edit, save_quote_pdf, send_quote, set_step_done, snapshot,
+    status, suggested_total_note, update_settings,
 };
 use cominorsa_domain::{
     BillingMilestone, BillingSummary, CaseFile, CaseRepository, LeadRepository, ProspectKind,
@@ -86,6 +87,7 @@ async fn existing_store(path: &Path) -> Result<SqliteLeads, AppError> {
     Ok(SqliteLeads::open(path).await?)
 }
 
+/// A store for a write. Writes keep the app's behavior: they migrate on open.
 async fn writable_store(path: &Path) -> Result<SqliteLeads, AppError> {
     Ok(SqliteLeads::open(path).await?)
 }
@@ -113,25 +115,49 @@ pub async fn run(cli: Cli) -> Result<Reply, Failure> {
 
     match cli.command {
         Command::Status => {
-            let store = existing_store(&path).await?;
+            let store = open_for_reading(&path).await?;
             let found = status(&store).await?;
             store.close().await;
             let text = format!(
-                "Leads: {}\nExpedientes activos: {}\nCotizaciones: {}\nProspectos: {}",
-                found.leads, found.active_cases, found.quotes, found.prospects
+                "Esquema: {}\nIntegridad: {}\nLeads: {}\nExpedientes: {}\nExpedientes activos: {}\nCotizaciones: {}\nProspectos: {}",
+                found.schema_version,
+                found.integrity_check,
+                found.leads,
+                found.cases,
+                found.active_cases,
+                found.quotes,
+                found.prospects
             );
             Ok(Reply::new(views::status(&found), text))
         }
         Command::Export => {
-            let store = existing_store(&path).await?;
+            let store = open_for_reading(&path).await?;
             let state = snapshot(&store).await?;
             store.close().await;
             let data = views::snapshot(&state);
             let text = serde_json::to_string_pretty(&data).unwrap_or_default();
             Ok(Reply::new(data, text))
         }
+        Command::Migrate => {
+            let done = migrate_database(&path, &context.clock).await?;
+            let copy = optional_path(done.safety_copy.as_deref());
+            let text = if done.changed {
+                format!("Esquema actualizado de {} a {}.", done.from, done.to)
+            } else {
+                format!("El esquema ya estaba en la versión {}.", done.to)
+            };
+            Ok(Reply::new(
+                json!({
+                    "changed": done.changed,
+                    "from": done.from,
+                    "to": done.to,
+                    "safety_copy": copy,
+                }),
+                text,
+            ))
+        }
         Command::Agenda => {
-            let store = existing_store(&path).await?;
+            let store = open_for_reading(&path).await?;
             let today = context.clock.today();
             let groups = agenda(&store, today).await?;
             store.close().await;
@@ -148,7 +174,7 @@ pub async fn run(cli: Cli) -> Result<Reply, Failure> {
         Command::Case(command) => case(&path, command, &mut context).await,
         Command::Step(command) => step(&path, command, &context).await,
         Command::Billing(command) => billing(&path, command, &mut context).await,
-        Command::Quote(command) => quote(&path, command, &context).await,
+        Command::Quote(command) => quote(&path, command, &mut context).await,
         Command::Settings(command) => settings(&path, command).await,
         Command::Backup(command) => backup(&path, command, &context).await,
     }
@@ -189,7 +215,7 @@ async fn lead(path: &Path, command: LeadCommand, context: &mut Context) -> Resul
             )
         }
         LeadCommand::List { query } => {
-            let store = existing_store(path).await?;
+            let store = open_for_reading(path).await?;
             let leads = store.list().await.map_err(AppError::from)?;
             store.close().await;
             let query = query.unwrap_or_default();
@@ -209,14 +235,14 @@ async fn lead(path: &Path, command: LeadCommand, context: &mut Context) -> Resul
             Reply::new(json!({"leads": data}), text)
         }
         LeadCommand::Show { id } => {
-            let store = existing_store(path).await?;
+            let store = open_for_reading(path).await?;
             let lead = find_lead(&store, id).await?;
             store.close().await;
             let text = format!("{} ({})", lead.name(), lead.stage().label());
             Reply::new(json!({"lead": views::lead(&lead)}), text)
         }
         LeadCommand::Summary => {
-            let store = existing_store(path).await?;
+            let store = open_for_reading(path).await?;
             let leads = store.list().await.map_err(AppError::from)?;
             store.close().await;
             let found = PipelineSummary::of(&leads, context.clock.today());
@@ -262,7 +288,7 @@ async fn lead(path: &Path, command: LeadCommand, context: &mut Context) -> Resul
             Reply::new(json!({"lead": views::lead(&lead)}), text)
         }
         LeadCommand::Whatsapp { id } => {
-            let store = existing_store(path).await?;
+            let store = open_for_reading(path).await?;
             let lead = find_lead(&store, id).await?;
             let settings = store.load().await.map_err(AppError::from)?;
             store.close().await;
@@ -323,7 +349,7 @@ async fn prospect(
             )
         }
         ProspectCommand::Search { query, limit } => {
-            let store = existing_store(path).await?;
+            let store = open_for_reading(path).await?;
             let found = store.search(&query, limit).await.map_err(AppError::from)?;
             store.close().await;
             let text = found
@@ -335,7 +361,7 @@ async fn prospect(
             Reply::new(json!({"prospects": data}), text)
         }
         ProspectCommand::Count => {
-            let store = existing_store(path).await?;
+            let store = open_for_reading(path).await?;
             let total = store.count().await.map_err(AppError::from)?;
             store.close().await;
             Reply::new(json!({"total": total}), format!("Prospectos: {total}"))
@@ -371,7 +397,10 @@ async fn prospect(
 }
 
 async fn case(path: &Path, command: CaseCommand, context: &mut Context) -> Result<Reply, Failure> {
-    let store = existing_store(path).await?;
+    let store = match command {
+        CaseCommand::Close { .. } => existing_store(path).await?,
+        CaseCommand::List | CaseCommand::Show { .. } => open_for_reading(path).await?,
+    };
     let reply = match command {
         CaseCommand::List => {
             let cases = store.active_cases().await.map_err(AppError::from)?;
@@ -384,7 +413,7 @@ async fn case(path: &Path, command: CaseCommand, context: &mut Context) -> Resul
             Reply::new(json!({"cases": data}), text)
         }
         CaseCommand::Show { id } => {
-            let file = find_case(&store, id).await?;
+            let file = find_stored_case(&store, id).await?;
             let quotes = store.quotes().await.map_err(AppError::from)?;
             let summary = BillingSummary::of(&file);
             let text = format!(
@@ -613,8 +642,20 @@ fn saved_quote(quote: &Quote, notice: String) -> Reply {
     Reply::new(json!({"quote": views::quote(quote)}), notice)
 }
 
-async fn quote(path: &Path, command: QuoteCommand, context: &Context) -> Result<Reply, Failure> {
-    let store = existing_store(path).await?;
+async fn quote(
+    path: &Path,
+    command: QuoteCommand,
+    context: &mut Context,
+) -> Result<Reply, Failure> {
+    let reads = matches!(
+        command,
+        QuoteCommand::List { .. } | QuoteCommand::Show { .. } | QuoteCommand::Pdf { .. }
+    );
+    let store = if reads {
+        open_for_reading(path).await?
+    } else {
+        existing_store(path).await?
+    };
     let today = context.clock.today();
     let blank = QuoteValues::default();
     let reply = match command {
@@ -623,7 +664,7 @@ async fn quote(path: &Path, command: QuoteCommand, context: &Context) -> Result<
             let mut values = QuoteValues::starting_on(today);
             values.lines = Vec::<QuoteLineValues>::new();
             overlay(&mut values, content);
-            let saved = save_quote_edit(&store, &lead, QuoteEdit::Save, &values, today).await?;
+            let saved = save_quote_edit(&store, &lead, QuoteEdit::Save, &values, context).await?;
             saved_quote(&saved.quote, saved.notice)
         }
         QuoteCommand::Edit { quote, content } => {
@@ -631,7 +672,7 @@ async fn quote(path: &Path, command: QuoteCommand, context: &Context) -> Result<
             let lead = find_lead(&store, quote.lead_id()).await?;
             let mut values = QuoteValues::of_quote(&quote);
             overlay(&mut values, content);
-            let saved = save_quote_edit(&store, &lead, QuoteEdit::Save, &values, today).await?;
+            let saved = save_quote_edit(&store, &lead, QuoteEdit::Save, &values, context).await?;
             saved_quote(&saved.quote, saved.notice)
         }
         QuoteCommand::List { lead } => {
@@ -666,21 +707,22 @@ async fn quote(path: &Path, command: QuoteCommand, context: &Context) -> Result<
             let quote = find_quote(&store, &quote).await?;
             let lead = find_lead(&store, quote.lead_id()).await?;
             let saved =
-                save_quote_edit(&store, &lead, QuoteEdit::Accept(quote), &blank, today).await?;
+                save_quote_edit(&store, &lead, QuoteEdit::Accept(quote), &blank, context).await?;
             saved_quote(&saved.quote, saved.notice)
         }
         QuoteCommand::Reject { quote } => {
             let quote = find_quote(&store, &quote).await?;
             let lead = find_lead(&store, quote.lead_id()).await?;
             let saved =
-                save_quote_edit(&store, &lead, QuoteEdit::Reject(quote), &blank, today).await?;
+                save_quote_edit(&store, &lead, QuoteEdit::Reject(quote), &blank, context).await?;
             saved_quote(&saved.quote, saved.notice)
         }
         QuoteCommand::Version { quote } => {
             let quote = find_quote(&store, &quote).await?;
             let lead = find_lead(&store, quote.lead_id()).await?;
             let saved =
-                save_quote_edit(&store, &lead, QuoteEdit::NewVersion(quote), &blank, today).await?;
+                save_quote_edit(&store, &lead, QuoteEdit::NewVersion(quote), &blank, context)
+                    .await?;
             saved_quote(&saved.quote, saved.notice)
         }
         QuoteCommand::Pdf { quote, out } => {
@@ -715,7 +757,7 @@ fn settings_change(arguments: SettingsArgs) -> SettingsChange {
 async fn settings(path: &Path, command: SettingsCommand) -> Result<Reply, Failure> {
     let reply = match command {
         SettingsCommand::Show => {
-            let store = existing_store(path).await?;
+            let store = open_for_reading(path).await?;
             let saved = store.load().await.map_err(AppError::from)?;
             store.close().await;
             let data = views::settings(&saved);

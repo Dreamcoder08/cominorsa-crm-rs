@@ -1,6 +1,9 @@
 //! Case steps, the agenda, and closing a case.
 
-use cominorsa_domain::{CaseClosure, CaseFile, CaseRepository, CaseStep, Lead, LeadRepository};
+use cominorsa_domain::{
+    CaseClosure, CaseFile, CaseRepository, CaseStatus, CaseStep, Lead, LeadRepository,
+};
+use cominorsa_storage::SqliteLeads;
 use time::{Date, format_description::well_known::Iso8601};
 use uuid::Uuid;
 
@@ -23,6 +26,11 @@ pub fn toggled_step(mut step: CaseStep, today: Date) -> CaseStep {
         step.mark_done(today);
     }
     step
+}
+
+/// Open, or closed and still owing money, as `active_cases` selects.
+pub(crate) fn is_active(file: &CaseFile) -> bool {
+    file.case.status() == CaseStatus::Open || file.unpaid_total().cents() > 0
 }
 
 /// An open case, or a closed one that still owes money.
@@ -143,22 +151,24 @@ where
         .renewal)
 }
 
-/// Closes an active case by id.
-pub async fn close_case<R>(
-    repository: &R,
+/// Any stored case, including a closed one with nothing left to collect.
+pub async fn find_stored_case(store: &SqliteLeads, id: Uuid) -> Result<CaseFile, AppError> {
+    store
+        .all_cases()
+        .await?
+        .into_iter()
+        .find(|file| file.case.id() == id)
+        .ok_or_else(|| AppError::rejected("case_not_found", "No se encontró el expediente"))
+}
+
+/// Closes a case by id. Closing it again changes nothing, even after it is
+/// settled and no longer active.
+pub async fn close_case(
+    store: &SqliteLeads,
     id: Uuid,
     context: &mut Context,
-) -> Result<CaseClosing, AppError>
-where
-    R: LeadRepository + CaseRepository,
-{
-    let file = find_case(repository, id).await?;
+) -> Result<CaseClosing, AppError> {
+    let file = find_stored_case(store, id).await?;
 
-    close(
-        repository,
-        file.case,
-        context.clock.today(),
-        &mut context.ids,
-    )
-    .await
+    close(store, file.case, context.clock.today(), &mut context.ids).await
 }

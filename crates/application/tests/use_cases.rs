@@ -7,8 +7,9 @@ use cominorsa_application::{
     AppError, BillingEdit, Clock, Context, ErrorKind, FormValues, Ids, MilestoneValues,
     ProspectConversion, QuoteEdit, QuoteLineValues, QuoteValues, SettingsChange, add_lead,
     advance_lead, agenda, apply_billing, assign_lead, close_case, convert_prospect, create_backup,
-    find_case, find_quote, reschedule_step, restore_backup, run_backup, save_quote_edit,
-    save_quote_pdf, send_quote, set_step_done, snapshot, status, update_settings,
+    find_case, find_quote, find_stored_case, migrate_database, open_for_reading, reschedule_step,
+    restore_backup, run_backup, save_quote_edit, save_quote_pdf, send_quote, set_step_done,
+    snapshot, status, update_settings,
 };
 use cominorsa_domain::{
     CaseRepository, DomainError, LeadRepository, Prospect, ProspectKind, ProspectRepository,
@@ -607,13 +608,17 @@ async fn closing_a_recurring_case_twice_creates_one_seeded_renewal() {
     let first = close_case(&store, case, &mut context("close"))
         .await
         .unwrap();
-    let repeat = close_case(&store, case, &mut context("again")).await;
+    let repeat = close_case(&store, case, &mut context("again"))
+        .await
+        .unwrap();
 
     let renewal = first.renewal.unwrap();
     assert_eq!(renewal.id(), Ids::seeded("close").issue().unwrap());
     assert_eq!(renewal.stage(), Stage::InitialContact);
     assert_eq!(renewal.renewal_of(), Some(case));
-    assert_eq!(repeat.unwrap_err().code(), "case_not_active");
+    assert!(first.closed);
+    assert!(!repeat.closed, "a settled case is already closed");
+    assert_eq!(repeat.renewal, None);
     let leads = store.list().await.unwrap();
     assert_eq!(
         leads
@@ -687,10 +692,16 @@ async fn a_quote_is_found_by_number_or_id() {
         .await
         .unwrap()
         .lead;
-    let quote = save_quote_edit(&store, &lead, QuoteEdit::Save, &quote_values(), TODAY)
-        .await
-        .unwrap()
-        .quote;
+    let quote = save_quote_edit(
+        &store,
+        &lead,
+        QuoteEdit::Save,
+        &quote_values(),
+        &mut context("quote"),
+    )
+    .await
+    .unwrap()
+    .quote;
 
     let by_number = find_quote(&store, "COT-2026-0001").await.unwrap();
     let by_id = find_quote(&store, &quote.id().to_string()).await.unwrap();
@@ -709,10 +720,16 @@ async fn sending_without_a_company_name_needs_an_explicit_choice() {
         .await
         .unwrap()
         .lead;
-    let quote = save_quote_edit(&store, &lead, QuoteEdit::Save, &quote_values(), TODAY)
-        .await
-        .unwrap()
-        .quote;
+    let quote = save_quote_edit(
+        &store,
+        &lead,
+        QuoteEdit::Save,
+        &quote_values(),
+        &mut context("quote"),
+    )
+    .await
+    .unwrap()
+    .quote;
 
     let refused = send_quote(&store, &lead, quote.clone(), false, TODAY)
         .await
@@ -733,10 +750,16 @@ async fn a_saved_quote_pdf_lands_at_the_chosen_path() {
         .await
         .unwrap()
         .lead;
-    let quote = save_quote_edit(&store, &lead, QuoteEdit::Save, &quote_values(), TODAY)
-        .await
-        .unwrap()
-        .quote;
+    let quote = save_quote_edit(
+        &store,
+        &lead,
+        QuoteEdit::Save,
+        &quote_values(),
+        &mut context("quote"),
+    )
+    .await
+    .unwrap()
+    .quote;
 
     let path = save_quote_pdf(&store, &quote, &scratch.path().join("cotizacion"))
         .await
@@ -898,9 +921,15 @@ async fn the_snapshot_keeps_every_active_record() {
     let (lead, _) = signed(&store, "s", "DAC").await;
     let found = store.list().await.unwrap();
     let signed_lead = found.iter().find(|item| item.id() == lead).unwrap();
-    save_quote_edit(&store, signed_lead, QuoteEdit::Save, &quote_values(), TODAY)
-        .await
-        .unwrap();
+    save_quote_edit(
+        &store,
+        signed_lead,
+        QuoteEdit::Save,
+        &quote_values(),
+        &mut context("quote"),
+    )
+    .await
+    .unwrap();
 
     let state = snapshot(&store).await.unwrap();
 
@@ -940,4 +969,244 @@ async fn status_counts_what_is_stored() {
     assert_eq!(found.quotes, 0);
     assert_eq!(found.prospects, 1);
     assert_eq!(found.team_members, 1);
+}
+
+async fn lead_for_quotes(store: &SqliteLeads) -> cominorsa_domain::Lead {
+    add_lead(store, form("Lead Uno", "DAC"), &mut context("one"))
+        .await
+        .unwrap()
+        .lead
+}
+
+#[tokio::test]
+async fn a_seeded_quote_takes_the_seeded_id() {
+    let scratch = Scratch::new();
+    let store = SqliteLeads::open(&scratch.database()).await.unwrap();
+    let lead = lead_for_quotes(&store).await;
+
+    let saved = save_quote_edit(
+        &store,
+        &lead,
+        QuoteEdit::Save,
+        &quote_values(),
+        &mut context("q"),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(saved.quote.id(), Ids::seeded("q").issue().unwrap());
+}
+
+#[tokio::test]
+async fn without_a_seed_a_quote_keeps_a_time_ordered_id() {
+    let scratch = Scratch::new();
+    let store = SqliteLeads::open(&scratch.database()).await.unwrap();
+    let lead = lead_for_quotes(&store).await;
+    let mut context = Context::system();
+
+    let saved = save_quote_edit(
+        &store,
+        &lead,
+        QuoteEdit::Save,
+        &quote_values(),
+        &mut context,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(saved.quote.id().get_version(), Some(Version::SortRand));
+}
+
+#[tokio::test]
+async fn repeating_a_seeded_quote_uses_no_number() {
+    let scratch = Scratch::new();
+    let store = SqliteLeads::open(&scratch.database()).await.unwrap();
+    let lead = lead_for_quotes(&store).await;
+
+    let first = save_quote_edit(
+        &store,
+        &lead,
+        QuoteEdit::Save,
+        &quote_values(),
+        &mut context("q"),
+    )
+    .await
+    .unwrap();
+    let repeat = save_quote_edit(
+        &store,
+        &lead,
+        QuoteEdit::Save,
+        &quote_values(),
+        &mut context("q"),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(repeat.quote.id(), first.quote.id());
+    assert_eq!(store.quotes().await.unwrap().len(), 1);
+    assert_eq!(store.quote_counters().await.unwrap()[0].last_sequence, 1);
+}
+
+#[tokio::test]
+async fn a_seed_reused_for_another_quote_is_refused() {
+    let scratch = Scratch::new();
+    let store = SqliteLeads::open(&scratch.database()).await.unwrap();
+    let lead = lead_for_quotes(&store).await;
+    save_quote_edit(
+        &store,
+        &lead,
+        QuoteEdit::Save,
+        &quote_values(),
+        &mut context("q"),
+    )
+    .await
+    .unwrap();
+    let mut other = quote_values();
+    other.notes = "Otra".to_owned();
+
+    let refused = save_quote_edit(&store, &lead, QuoteEdit::Save, &other, &mut context("q"))
+        .await
+        .unwrap_err();
+
+    assert_eq!(refused.code(), "id_conflict");
+    assert_eq!(store.quotes().await.unwrap()[0].notes(), "");
+}
+
+#[tokio::test]
+async fn a_settled_case_can_be_found_but_is_not_active() {
+    let scratch = Scratch::new();
+    let store = SqliteLeads::open(&scratch.database()).await.unwrap();
+    let (_, case) = signed(&store, "s", "REINFO").await;
+    close_case(&store, case, &mut context("close"))
+        .await
+        .unwrap();
+
+    let found = find_stored_case(&store, case).await.unwrap();
+
+    assert_eq!(found.case.status().code(), "closed");
+    assert_eq!(
+        find_case(&store, case).await.unwrap_err().code(),
+        "case_not_active"
+    );
+}
+
+#[tokio::test]
+async fn an_unknown_case_is_a_rejection() {
+    let scratch = Scratch::new();
+    let store = SqliteLeads::open(&scratch.database()).await.unwrap();
+
+    let shown = find_stored_case(&store, Uuid::nil()).await.unwrap_err();
+    let closed = close_case(&store, Uuid::nil(), &mut context("x"))
+        .await
+        .unwrap_err();
+
+    assert_eq!(shown.code(), "case_not_found");
+    assert_eq!(closed.code(), "case_not_found");
+}
+
+#[tokio::test]
+async fn the_snapshot_holds_settled_cases_and_quote_counters() {
+    let scratch = Scratch::new();
+    let store = SqliteLeads::open(&scratch.database()).await.unwrap();
+    let (_, case) = signed(&store, "s", "REINFO").await;
+    let lead = store.list().await.unwrap().remove(0);
+    close_case(&store, case, &mut context("close"))
+        .await
+        .unwrap();
+    save_quote_edit(
+        &store,
+        &lead,
+        QuoteEdit::Save,
+        &quote_values(),
+        &mut context("q"),
+    )
+    .await
+    .unwrap();
+
+    let state = snapshot(&store).await.unwrap();
+
+    assert_eq!(state.cases.len(), 1);
+    assert_eq!(state.cases[0].case.id(), case);
+    assert_eq!(state.schema_version, SqliteLeads::required_schema_version());
+    assert_eq!(state.quote_counters.len(), 1);
+    assert_eq!(state.quote_counters[0].year, 2026);
+    assert_eq!(state.quote_counters[0].last_sequence, 1);
+}
+
+#[tokio::test]
+async fn status_reports_the_schema_version_and_integrity_check() {
+    let scratch = Scratch::new();
+    let store = SqliteLeads::open(&scratch.database()).await.unwrap();
+    let (_, case) = signed(&store, "s", "REINFO").await;
+    close_case(&store, case, &mut context("close"))
+        .await
+        .unwrap();
+
+    let found = status(&store).await.unwrap();
+
+    assert_eq!(found.schema_version, SqliteLeads::required_schema_version());
+    assert_eq!(found.integrity_check, "ok");
+    assert_eq!(found.cases, 1);
+    assert_eq!(found.active_cases, 0);
+}
+
+#[tokio::test]
+async fn reading_opens_without_changing_the_file() {
+    let scratch = Scratch::new();
+    let store = SqliteLeads::open(&scratch.database()).await.unwrap();
+    add_lead(&store, form("Lead Uno", "DAC"), &mut context("one"))
+        .await
+        .unwrap();
+    store.close().await;
+    let before = fs::read(scratch.database()).unwrap();
+
+    let reader = open_for_reading(&scratch.database()).await.unwrap();
+    snapshot(&reader).await.unwrap();
+    status(&reader).await.unwrap();
+    reader.close().await;
+
+    assert_eq!(fs::read(scratch.database()).unwrap(), before);
+}
+
+#[tokio::test]
+async fn reading_a_missing_database_is_a_storage_failure_that_creates_nothing() {
+    let scratch = Scratch::new();
+
+    let refused = open_for_reading(&scratch.database()).await.err().unwrap();
+
+    assert_eq!(refused.code(), "database_not_found");
+    assert_eq!(refused.kind(), ErrorKind::Storage);
+    assert!(!scratch.database().exists());
+}
+
+#[tokio::test]
+async fn migrating_a_current_database_changes_nothing() {
+    let scratch = Scratch::new();
+    SqliteLeads::open(&scratch.database())
+        .await
+        .unwrap()
+        .close()
+        .await;
+    let before = fs::read(scratch.database()).unwrap();
+    let clock = Clock::fixed(Some(TODAY), Some(NOW));
+
+    let migration = migrate_database(&scratch.database(), &clock).await.unwrap();
+
+    assert!(!migration.changed);
+    assert_eq!(migration.from, migration.to);
+    assert_eq!(migration.safety_copy, None);
+    assert_eq!(fs::read(scratch.database()).unwrap(), before);
+}
+
+#[tokio::test]
+async fn migrating_a_missing_database_is_refused_and_creates_nothing() {
+    let scratch = Scratch::new();
+    let clock = Clock::fixed(Some(TODAY), Some(NOW));
+
+    let refused = migrate_database(&scratch.database(), &clock)
+        .await
+        .unwrap_err();
+
+    assert_eq!(refused.code(), "database_not_found");
+    assert!(!scratch.database().exists());
 }
