@@ -3,7 +3,9 @@ use cominorsa_desktop::{
     Section, SettingsView, Shell, Workspace, format_date, format_timestamp, matches_query,
     next_follow_up, owner_options, parse_form, profile_label, window_icon,
 };
-use cominorsa_domain::{Lead, NewLead, Prospect, ProspectKind, Settings, ThemePreference};
+use cominorsa_domain::{
+    Lead, NewLead, Prospect, ProspectKind, Settings, TaxRecord, ThemePreference,
+};
 use dioxus::prelude::*;
 use time::{Date, macros::date};
 
@@ -273,7 +275,55 @@ fn prospect(service: &str) -> Prospect {
         potential_service: service.to_owned(),
         needs_review: false,
         source: "Synthetic".to_owned(),
+        tax: None,
     }
+}
+
+fn with_tax(status: &str, approximate: bool) -> Prospect {
+    Prospect {
+        kind: ProspectKind::Company,
+        tax: Some(TaxRecord {
+            ruc: "20123456786".to_owned(),
+            status: status.to_owned(),
+            condition: "HABIDO".to_owned(),
+            address: "CAL DEMO 123".to_owned(),
+            approximate,
+        }),
+        ..prospect("DAC")
+    }
+}
+
+fn prospects_with_tax() -> Element {
+    rsx! {
+        Prospects {
+            prospects: vec![with_tax("ACTIVO", false), with_tax("BAJA DE OFICIO", true)],
+            total: 2,
+            query: String::new(),
+            on_query: |_| {},
+            on_convert: |_| {},
+        }
+    }
+}
+
+#[test]
+fn shows_ruc_status_and_flags_approximate_matches() {
+    let html = render(prospects_with_tax);
+
+    assert!(html.contains("RUC 20123456786"));
+    assert!(html.contains("ACTIVO"));
+    assert!(html.contains("BAJA DE OFICIO"));
+    assert!(html.contains("Confirmar RUC"));
+    assert!(html.contains("CAL DEMO 123"));
+}
+
+#[test]
+fn prefills_only_confirmed_rucs_when_converting() {
+    let exact = FormValues::from_prospect(&with_tax("ACTIVO", false), TODAY);
+    let approximate = FormValues::from_prospect(&with_tax("ACTIVO", true), TODAY);
+
+    assert_eq!(exact.ruc, "20123456786");
+    assert!(exact.phone.is_empty());
+    assert!(approximate.ruc.is_empty());
 }
 
 fn prospects_view() -> Element {

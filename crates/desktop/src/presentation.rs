@@ -159,3 +159,11 @@ pub fn owner_options(team: &[String], owner: Option<&str>) -> Vec<String> {
     }
     options
 }
+
+pub fn tax_status_class(status: &str) -> &'static str {
+    if status == "ACTIVO" {
+        "closed"
+    } else {
+        "overdue"
+    }
+}

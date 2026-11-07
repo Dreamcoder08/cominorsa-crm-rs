@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::{
     AgendaGroups, FollowUp, FormValues, PipelineSummary, format_date, matches_query, owner_options,
-    profile_label,
+    profile_label, tax_status_class,
 };
 
 const SERVICES: [&str; 5] = ["REINFO", "IGAFOM", "DAC", "ESTAMIN", "Plan de minado"];
@@ -188,6 +188,7 @@ pub fn Prospects(
                             th { "Perfil" }
                             th { class: "numeric", "Concesiones" }
                             th { class: "numeric hide-tablet", "Hectáreas" }
+                            th { "SUNAT" }
                             th { class: "hide-phone", "Departamentos" }
                             th { class: "hide-tablet", "Servicio potencial" }
                             th { span { class: "visually-hidden", "Acción" } }
@@ -199,10 +200,24 @@ pub fn Prospects(
                                 td {
                                     strong { "{prospect.name}" }
                                     span { class: "kind", "{prospect.kind.label()}" }
+                                    if let Some(tax) = &prospect.tax {
+                                        span { class: "tax-line", "RUC {tax.ruc}" }
+                                        span { class: "tax-line", "{tax.address}" }
+                                    }
                                 }
                                 td { "{profile_label(&prospect.profile)}" }
                                 td { class: "numeric", "{prospect.concessions}" }
                                 td { class: "numeric hide-tablet", "{prospect.hectares:.0}" }
+                                td {
+                                    if let Some(tax) = &prospect.tax {
+                                        span { class: "status {tax_status_class(&tax.status)}", "{tax.status}" }
+                                        if tax.approximate {
+                                            span { class: "tax-line", "Confirmar RUC" }
+                                        }
+                                    } else {
+                                        span { class: "status", "Sin RUC" }
+                                    }
+                                }
                                 td { class: "hide-phone", "{prospect.departments}" }
                                 td { class: "hide-tablet", "{prospect.potential_service}" }
                                 td {

@@ -43,6 +43,14 @@ The importer validates both files first, copies an existing database next to it 
 
 Tokens live at the top of `crates/desktop/src/style.css` and use `light-dark()`, so each color is declared once for both themes. `crates/desktop/tests/contrast.rs` fails when text drops below 4.5:1 or a control or state indicator drops below 3:1. Layout has three modes: full sidebar, icon rail at 1080 px, and bottom navigation at 720 px.
 
+Enrich company prospects with a prepared SUNAT file, kept outside this repository:
+
+```sh
+cargo run --release -p cominorsa-importer -- --db <crm.db> --sunat <companies-sunat.csv>
+```
+
+The file comes from the public reduced RUC roll, which has no phone or email. Approximate matches show "Confirmar RUC" and never prefill a lead.
+
 ## Structure
 
 | Crate | Responsibility | May depend on |

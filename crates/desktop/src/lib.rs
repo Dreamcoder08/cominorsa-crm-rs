@@ -24,7 +24,7 @@ use uuid::Uuid;
 
 pub use presentation::{
     AgendaGroups, FollowUp, PipelineSummary, format_date, format_timestamp, matches_query,
-    next_follow_up, owner_options, profile_label,
+    next_follow_up, owner_options, profile_label, tax_status_class,
 };
 pub use settings_view::{SaveState, SettingsView};
 pub use views::{Agenda, LeadForm, Prospects, Section, Shell, Workspace};
@@ -57,15 +57,22 @@ impl FormValues {
         }
     }
 
-    /// Phone and RUC stay blank: prospect sources carry no contact data.
+    /// Phone stays blank: sources carry no contact data. Only confirmed RUCs prefill.
     pub fn from_prospect(prospect: &Prospect, follow_up_on: Date) -> Self {
         let service = match prospect.potential_service.as_str() {
             MANUAL_REVIEW_SERVICE => "",
             service => service,
         };
 
+        let ruc = prospect
+            .tax
+            .as_ref()
+            .filter(|tax| !tax.approximate)
+            .map_or_else(String::new, |tax| tax.ruc.clone());
+
         Self {
             name: prospect.name.clone(),
+            ruc,
             service: service.to_owned(),
             ..Self::starting_on(follow_up_on)
         }
