@@ -780,6 +780,10 @@ for command in init status migrate "lead list"; do
 done
 importer_refused gap/crm.db import-companies.csv import-people.csv
 expect "files after the importer with the database aside" "$gap_files" "$(ls gap)"
+mkdir notes
+echo "notas del usuario" >notes/crm.aparte-notas.db
+expect "a user file with a similar name blocks nothing" true "$("$binary" --db notes/crm.db --json init | jq '.data.created')"
+expect "a user file with a similar name stays as it was" "notas del usuario" "$(cat notes/crm.aparte-notas.db)"
 
 echo "== only migrate upgrades"
 echo "archivo del usuario" >old.migrating.db

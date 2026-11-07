@@ -11,7 +11,7 @@ use std::{
     hash::{Hash, Hasher},
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    process::{Child, ChildStdin, ChildStdout, Command, Output, Stdio},
     time::{Duration, Instant},
 };
 
@@ -95,6 +95,53 @@ fn digest(path: &Path) -> u64 {
     hasher.finish()
 }
 
+/// Whatever `migrate` answered, the database is still at its path, opens,
+/// and holds `expected`, and no file moved aside or working copy is left.
+/// Every message carries what `migrate` printed, so a failure shows its cause.
+fn assert_data_safe(scratch: &Scratch, db: &Path, migrated: &Output, expected: &[String]) {
+    let said = format!(
+        "migrate exited {:?}; stdout: {}; stderr: {}",
+        migrated.status.code(),
+        String::from_utf8_lossy(&migrated.stdout),
+        String::from_utf8_lossy(&migrated.stderr)
+    );
+    assert!(db.exists(), "the database left its path; {said}");
+    let leftovers: Vec<String> = scratch
+        .names()
+        .into_iter()
+        .filter(|name| name.contains("aparte") || name.contains("migrando"))
+        .collect();
+    assert!(leftovers.is_empty(), "left behind {leftovers:?}; {said}");
+    let read = Command::new("sqlite3")
+        .arg(db)
+        .arg("SELECT name FROM leads;")
+        .output()
+        .unwrap();
+    assert!(
+        read.status.success(),
+        "the database does not open: {read:?}; {said}"
+    );
+    let names = String::from_utf8_lossy(&read.stdout).into_owned();
+    let names: Vec<&str> = names.lines().collect();
+    for name in expected {
+        assert!(names.contains(&name.as_str()), "{name} was lost; {said}");
+    }
+}
+
+/// The error code of a refused `migrate`, with everything it printed.
+fn migrate_code(migrated: &Output) -> String {
+    let parsed: Value = serde_json::from_slice(&migrated.stderr).unwrap_or_else(|error| {
+        panic!(
+            "unreadable stderr ({error}): {}",
+            String::from_utf8_lossy(&migrated.stderr)
+        )
+    });
+    parsed["error"]["code"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
 fn lead_names(db: &Path) -> Vec<String> {
     export(db)["leads"]
         .as_array()
@@ -154,6 +201,11 @@ fn a_write_waiting_on_migrate_is_refused_or_kept() {
     let written = other.run(NEW_LEAD);
     other.quit();
 
+    let mut expected = vec!["Lead Viejo".to_owned()];
+    if written.is_ok() {
+        expected.push("Escrito por otro".to_owned());
+    }
+    assert_data_safe(&scratch, &db, &migrated, &expected);
     match migrated.status.code() {
         Some(0) => {
             let refusal = written.expect_err("a write to the replaced file must fail");
@@ -161,7 +213,7 @@ fn a_write_waiting_on_migrate_is_refused_or_kept() {
             assert_eq!(lead_names(&db), ["Lead Viejo"]);
         }
         _ => {
-            assert_eq!(failure(&migrated, 3).0, "database_busy");
+            assert_eq!(migrate_code(&migrated), "database_busy", "{migrated:?}");
             written.unwrap();
             assert_eq!(data(&run(&db, &["migrate"]))["changed"], true);
             assert_eq!(lead_names(&db), ["Lead Viejo", "Escrito por otro"]);
@@ -209,17 +261,14 @@ fn writes_racing_migrate_are_refused_or_kept() {
     }
     let migrated = migrate.wait_with_output().unwrap();
 
+    kept.push("Lead Viejo".to_owned());
+    assert_data_safe(&scratch, &db, &migrated, &kept);
     if migrated.status.success() {
         assert_eq!(data(&migrated)["changed"], true);
     } else {
-        assert_eq!(failure(&migrated, 3).0, "database_busy");
+        assert_eq!(migrate_code(&migrated), "database_busy", "{migrated:?}");
         data(&run(&db, &["migrate"]));
     }
-    let names = lead_names(&db);
-    for name in &kept {
-        assert!(names.contains(name), "{name} was written and then lost");
-    }
-    assert!(names.contains(&"Lead Viejo".to_owned()));
 }
 
 #[test]
@@ -561,4 +610,40 @@ fn a_database_left_aside_is_never_replaced_by_a_new_one() {
         assert!(message.contains(&copy), "{message}");
         assert_eq!(scratch.names(), names, "{args:?}");
     }
+}
+
+#[test]
+fn a_user_file_with_a_similar_name_neither_blocks_nor_is_named() {
+    let scratch = Scratch::new();
+    let db = scratch.file("crm.db");
+    let user_files = [
+        "crm.aparte-notas.db",
+        "crm.aparte-1-2-3.db",
+        "crm.antes-de-migrar-notas.db",
+    ];
+    for name in user_files {
+        fs::write(scratch.file(name), format!("archivo del usuario: {name}")).unwrap();
+    }
+
+    assert_eq!(data(&run(&db, &["init"]))["created"], true);
+
+    for name in user_files {
+        assert_eq!(
+            fs::read_to_string(scratch.file(name)).unwrap(),
+            format!("archivo del usuario: {name}")
+        );
+    }
+
+    let other = scratch.file("otra.db");
+    let built = scratch.file("construida.db");
+    data(&run(&built, &["init"]));
+    fs::rename(&built, scratch.file("otra.aparte-12-0.db")).unwrap();
+    fs::write(scratch.file("otra.antes-de-migrar-notas.db"), "del usuario").unwrap();
+    let (code, message) = failure(&run(&other, &["status"]), 3);
+    assert_eq!(code, "database_aside");
+    assert!(message.contains("otra.aparte-12-0.db"), "{message}");
+    assert!(
+        !message.contains("otra.antes-de-migrar-notas.db"),
+        "{message}"
+    );
 }

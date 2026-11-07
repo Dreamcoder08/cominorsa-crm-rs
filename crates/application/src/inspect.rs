@@ -137,7 +137,7 @@ pub async fn migrate_database(path: &Path, clock: &Clock) -> Result<Migration, A
     let safety_copy = SqliteLeads::upgrade(path, &clock.file_stamp())
         .await
         .map_err(|error| match error {
-            UpgradeError::Busy => AppError::storage(
+            UpgradeError::Busy { .. } => AppError::storage(
                 "database_busy",
                 format!(
                     "Otro programa tiene abierta la base {}. Ciérralo y vuelve a intentar: cominorsa migrate",

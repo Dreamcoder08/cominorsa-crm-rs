@@ -6,7 +6,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, ErrorKind},
     path::{Path, PathBuf},
-    process,
+    process, thread,
     time::Duration,
 };
 
@@ -203,12 +203,24 @@ const WORKING_LABEL: &str = "migrando";
 const ASIDE_LABEL: &str = "aparte";
 const RESTORE_LABEL: &str = "restaurando";
 
+/// OS error codes that mean another handle holds the file, not a real fault:
+/// on Windows `ERROR_ACCESS_DENIED`, `ERROR_SHARING_VIOLATION`, and
+/// `ERROR_LOCK_VIOLATION`; elsewhere `EBUSY` and `ETXTBSY`.
+const BUSY_OS_ERRORS_WINDOWS: [i32; 3] = [5, 32, 33];
+const BUSY_OS_ERRORS_UNIX: [i32; 2] = [16, 26];
+
+/// How often, and how far apart, a file is retried while another handle
+/// still holds the database path: two seconds in all.
+const PLACE_ATTEMPTS: u32 = 100;
+const PLACE_PAUSE: Duration = Duration::from_millis(20);
+
 /// Why `upgrade` left the database as it was.
 #[derive(Debug)]
 pub enum UpgradeError {
-    /// Another connection has the database open or is using it; nothing was
-    /// written.
-    Busy,
+    /// Another connection or handle has the database, so it stays as it
+    /// was. `safety_copy` is only set while a copy this run made still needs
+    /// removing; [`SqliteLeads::upgrade`] never returns one.
+    Busy { safety_copy: Option<PathBuf> },
     /// The upgrade failed. `safety_copy` is the copy it made, if it made one.
     Failed {
         error: RepositoryError,
@@ -218,12 +230,26 @@ pub enum UpgradeError {
 
 impl UpgradeError {
     fn with_copy(self, copy: &Path) -> Self {
+        let safety_copy = Some(copy.to_path_buf());
         match self {
-            Self::Failed { error, .. } => Self::Failed {
-                error,
-                safety_copy: Some(copy.to_path_buf()),
-            },
-            busy => busy,
+            Self::Failed { error, .. } => Self::Failed { error, safety_copy },
+            Self::Busy { .. } => Self::Busy { safety_copy },
+        }
+    }
+
+    const BUSY: Self = Self::Busy { safety_copy: None };
+
+    /// Once the original is back in place, a busy refusal needs no copy: the
+    /// one this run made is removed.
+    fn settled(self) -> Self {
+        match self {
+            Self::Busy {
+                safety_copy: Some(copy),
+            } => {
+                let _ = fs::remove_file(copy);
+                Self::BUSY
+            }
+            other => other,
         }
     }
 }
@@ -245,7 +271,7 @@ impl From<sqlx::Error> for UpgradeError {
             .and_then(|code| code.parse::<i32>().ok())
             .is_some_and(|code| code & 0xff == SQLITE_BUSY);
         if busy {
-            Self::Busy
+            Self::BUSY
         } else {
             failure(error).into()
         }
@@ -283,12 +309,9 @@ impl AsideFiles {
         let mut safety_copies = Vec::new();
         for entry in fs::read_dir(folder).ok()?.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if !name.ends_with(".db") {
-                continue;
-            }
-            if name.starts_with(&aside) {
+            if numbered(&name, &aside, &[2]) {
                 asides.push(entry.path());
-            } else if name.starts_with(&copy) {
+            } else if numbered(&name, &copy, &[2, 4]) {
                 safety_copies.push(entry.path());
             }
         }
@@ -301,6 +324,25 @@ impl AsideFiles {
             safety_copies,
         })
     }
+}
+
+/// Whether `name` is `<prefix><digits>-<digits>....db` with one of `groups`
+/// groups of decimal digits: the names this adapter gives, such as
+/// `crm.aparte-<process>-<n>.db` or a safety copy with its stamp. A user file
+/// such as `crm.aparte-notas.db` never matches.
+fn numbered(name: &str, prefix: &str, groups: &[usize]) -> bool {
+    let Some(rest) = name
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.strip_suffix(".db"))
+    else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('-').collect();
+
+    groups.contains(&parts.len())
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 impl fmt::Display for AsideFiles {
@@ -414,7 +456,7 @@ impl SqliteLeads {
     /// file stays byte-identical.
     pub async fn upgrade(database: &Path, stamp: &str) -> Result<PathBuf, UpgradeError> {
         if cfg!(windows) {
-            upgrade_aside(database, stamp, |_| {}).await
+            upgrade_aside(database, stamp, &mut no_probe).await
         } else {
             upgrade_locked(database, stamp).await
         }
@@ -487,7 +529,7 @@ impl SqliteLeads {
         backup: &Path,
         safety: &Path,
     ) -> Result<Self, RepositoryError> {
-        let working = working_copy(database, backup, RESTORE_LABEL)?;
+        let working = working_copy(database, backup, RESTORE_LABEL).map_err(failure)?;
 
         if let Err(error) = validate_backup(&working).await {
             remove_with_sidecars(&working);
@@ -621,7 +663,7 @@ async fn lock_exclusively(database: &Path) -> Result<SqliteConnection, UpgradeEr
 /// A new, empty file beside `database` named `<stem>.<label>-<pid>-<n>.db`.
 /// The name is new, and so are the names SQLite gives its journals, so no
 /// user file is ever overwritten or later deleted.
-fn new_file_beside(database: &Path, label: &str) -> Result<(PathBuf, File), RepositoryError> {
+fn new_file_beside(database: &Path, label: &str) -> io::Result<(PathBuf, File)> {
     for attempt in 0..WORKING_NAME_ATTEMPTS {
         let path = database.with_extension(format!("{label}-{}-{attempt}.db", process::id()));
         if sidecars(&path).iter().any(|sidecar| sidecar.exists()) {
@@ -630,15 +672,18 @@ fn new_file_beside(database: &Path, label: &str) -> Result<(PathBuf, File), Repo
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(file) => return Ok((path, file)),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(failure(error)),
+            Err(error) => return Err(error),
         }
     }
 
-    Err(failure("No hay un nombre libre junto a la base"))
+    Err(io::Error::new(
+        ErrorKind::AlreadyExists,
+        "No hay un nombre libre junto a la base",
+    ))
 }
 
 /// A copy of `source` in a new file beside `database`, named after `label`.
-fn working_copy(database: &Path, source: &Path, label: &str) -> Result<PathBuf, RepositoryError> {
+fn working_copy(database: &Path, source: &Path, label: &str) -> io::Result<PathBuf> {
     let (working, mut file) = new_file_beside(database, label)?;
     let copied = File::open(source)
         .and_then(|mut source| io::copy(&mut source, &mut file))
@@ -649,9 +694,83 @@ fn working_copy(database: &Path, source: &Path, label: &str) -> Result<PathBuf, 
         Ok(()) => Ok(working),
         Err(error) => {
             let _ = fs::remove_file(&working);
-            Err(failure(error))
+            Err(error)
         }
     }
+}
+
+/// Whether OS error `code` means another handle holds the file, on Windows
+/// when `windows` is set, else on Unix.
+fn busy_os_error(code: i32, windows: bool) -> bool {
+    if windows {
+        BUSY_OS_ERRORS_WINDOWS.contains(&code)
+    } else {
+        BUSY_OS_ERRORS_UNIX.contains(&code)
+    }
+}
+
+fn is_busy(error: &io::Error) -> bool {
+    error
+        .raw_os_error()
+        .is_some_and(|code| busy_os_error(code, cfg!(windows)))
+}
+
+/// A file error during an upgrade: busy when another handle holds the file.
+fn io_failure(error: io::Error) -> UpgradeError {
+    if is_busy(&error) {
+        UpgradeError::BUSY
+    } else {
+        failure(error).into()
+    }
+}
+
+/// Runs `step` again while another handle holds the file, for at most
+/// `PLACE_ATTEMPTS` tries.
+fn retrying(mut step: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+    let mut attempt = 1;
+    loop {
+        match step() {
+            Err(error) if is_busy(&error) && attempt < PLACE_ATTEMPTS => {
+                attempt += 1;
+                thread::sleep(PLACE_PAUSE);
+            }
+            done => return done,
+        }
+    }
+}
+
+/// Puts `file` at `target`. An empty file there is what a tool such as
+/// `sqlite3` leaves when it opens a missing path, so it is replaced; any
+/// other file there is never overwritten.
+fn place(file: &Path, target: &Path) -> io::Result<()> {
+    retrying(|| {
+        if let Ok(found) = fs::metadata(target) {
+            if found.len() > 0 {
+                return Err(io::Error::new(
+                    ErrorKind::AlreadyExists,
+                    format!("Ya existe {}", target.display()),
+                ));
+            }
+            fs::remove_file(target)?;
+        }
+        fs::rename(file, target)
+    })
+}
+
+/// Points of the upgrade on Windows where a test can act or fail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Step {
+    /// Right after the database moved aside.
+    Aside,
+    /// Before the safety copy and the working copy.
+    Copy,
+    /// Before the migrated copy goes to the database path.
+    Swap,
+}
+
+/// What a step does in production: nothing.
+fn no_probe(_: Step, _: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 /// Takes the safety copy through `lock` and migrates a working copy of it,
@@ -661,7 +780,8 @@ async fn copy_and_migrate(
     database: &Path,
     stamp: &str,
 ) -> Result<(PathBuf, PathBuf), UpgradeError> {
-    let (safety, placeholder) = new_file_beside(database, &format!("{SAFETY_LABEL}-{stamp}"))?;
+    let (safety, placeholder) =
+        new_file_beside(database, &format!("{SAFETY_LABEL}-{stamp}")).map_err(io_failure)?;
     drop(placeholder);
     // `VACUUM INTO` accepts an empty file, so the reserved name is kept.
     let copied = sqlx::query("VACUUM INTO ?1")
@@ -673,26 +793,20 @@ async fn copy_and_migrate(
         return Err(error.into());
     }
 
-    let migrated = async {
-        let working = working_copy(database, &safety, WORKING_LABEL)?;
-        let opened = async {
-            SqliteLeads::open(&working).await?.close().await;
-            Ok::<_, RepositoryError>(())
-        }
-        .await;
-        match opened {
-            Ok(()) => Ok(working),
-            Err(error) => {
-                remove_with_sidecars(&working);
-                Err(error)
-            }
-        }
+    let working = working_copy(database, &safety, WORKING_LABEL)
+        .map_err(|error| io_failure(error).with_copy(&safety))?;
+    let opened = async {
+        SqliteLeads::open(&working).await?.close().await;
+        Ok::<_, RepositoryError>(())
     }
     .await;
 
-    match migrated {
-        Ok(working) => Ok((safety, working)),
-        Err(error) => Err(UpgradeError::from(error).with_copy(&safety)),
+    match opened {
+        Ok(()) => Ok((safety, working)),
+        Err(error) => {
+            remove_with_sidecars(&working);
+            Err(UpgradeError::from(error).with_copy(&safety))
+        }
     }
 }
 
@@ -712,7 +826,7 @@ async fn upgrade_locked(database: &Path, stamp: &str) -> Result<PathBuf, Upgrade
         let (safety, working) = copy_and_migrate(&mut lock, database, stamp).await?;
         let swapped = async {
             leave_wal(&mut lock).await?;
-            fs::rename(&working, database).map_err(|error| UpgradeError::from(failure(error)))
+            fs::rename(&working, database).map_err(io_failure)
         }
         .await;
         match swapped {
@@ -726,7 +840,8 @@ async fn upgrade_locked(database: &Path, stamp: &str) -> Result<PathBuf, Upgrade
     .await;
     let _ = lock.close().await;
 
-    upgraded
+    // The lock held the original until here, so it is intact on any error.
+    upgraded.map_err(UpgradeError::settled)
 }
 
 /// The upgrade where an open file cannot be renamed (Windows). Moving the
@@ -734,35 +849,20 @@ async fn upgrade_locked(database: &Path, stamp: &str) -> Result<PathBuf, Upgrade
 /// a busy database changes in nothing. The upgrade then works on the moved
 /// file, which no one else can reach, and puts the migrated copy at the
 /// database path. Meanwhile that path is missing, and [`AsideFiles`] keeps
-/// every open from creating a new database there. On failure the file goes
-/// back. `between` runs right after the move, so a test can act in the gap.
+/// every open of this program from creating a new database there.
+///
+/// Whatever fails after the move, the file goes back to its path before the
+/// answer: a held file (`ERROR_SHARING_VIOLATION`, `ERROR_LOCK_VIOLATION`,
+/// `ERROR_ACCESS_DENIED`) answers [`UpgradeError::Busy`], anything else
+/// [`UpgradeError::Failed`]. `probe` runs at each [`Step`], so a test can act
+/// or fail there.
 async fn upgrade_aside(
     database: &Path,
     stamp: &str,
-    between: impl FnOnce(&Path),
+    probe: &mut dyn FnMut(Step, &Path) -> io::Result<()>,
 ) -> Result<PathBuf, UpgradeError> {
     let aside = move_aside(database)?;
-    between(database);
-
-    let upgraded = async {
-        let mut lock = lock_exclusively(&aside).await?;
-        let prepared = copy_and_migrate(&mut lock, database, stamp).await;
-        let _ = lock.close().await;
-        let (safety, working) = prepared?;
-        let placed = if database.exists() {
-            Err(failure(format!("Ya existe {}", database.display())))
-        } else {
-            fs::rename(&working, database).map_err(failure)
-        };
-        match placed {
-            Ok(()) => Ok(safety),
-            Err(error) => {
-                remove_with_sidecars(&working);
-                Err(UpgradeError::from(error).with_copy(&safety))
-            }
-        }
-    }
-    .await;
+    let upgraded = upgrade_moved(&aside, database, stamp, probe).await;
 
     match upgraded {
         Ok(safety) => {
@@ -770,15 +870,45 @@ async fn upgrade_aside(
             Ok(safety)
         }
         Err(error) => match put_back(&aside, database) {
-            Ok(()) => Err(error),
+            Ok(()) => Err(error.settled()),
             Err(stuck) => Err(match error {
                 UpgradeError::Failed {
                     safety_copy: Some(copy),
                     ..
+                }
+                | UpgradeError::Busy {
+                    safety_copy: Some(copy),
                 } => stuck.with_copy(&copy),
                 _ => stuck,
             }),
         },
+    }
+}
+
+/// The part of the Windows upgrade that runs on the moved file. It never
+/// moves that file back; its caller always does on an error.
+async fn upgrade_moved(
+    aside: &Path,
+    database: &Path,
+    stamp: &str,
+    probe: &mut dyn FnMut(Step, &Path) -> io::Result<()>,
+) -> Result<PathBuf, UpgradeError> {
+    probe(Step::Aside, database).map_err(io_failure)?;
+    let mut lock = lock_exclusively(aside).await?;
+    let prepared = match probe(Step::Copy, database) {
+        Ok(()) => copy_and_migrate(&mut lock, database, stamp).await,
+        Err(error) => Err(io_failure(error)),
+    };
+    let _ = lock.close().await;
+    let (safety, working) = prepared?;
+
+    let placed = probe(Step::Swap, database).and_then(|()| place(&working, database));
+    match placed {
+        Ok(()) => Ok(safety),
+        Err(error) => {
+            remove_with_sidecars(&working);
+            Err(io_failure(error).with_copy(&safety))
+        }
     }
 }
 
@@ -789,19 +919,23 @@ fn journals(path: &Path) -> [PathBuf; 2] {
     [wal, journal]
 }
 
-/// Moves `database` and its journals to a new name beside it. Any failure
-/// means someone has them open: what moved goes back.
+/// Moves `database` and its journals to a new name beside it. Whatever moved
+/// goes back on a failure.
 fn move_aside(database: &Path) -> Result<PathBuf, UpgradeError> {
-    let (aside, placeholder) = new_file_beside(database, ASIDE_LABEL)?;
+    let (aside, placeholder) = new_file_beside(database, ASIDE_LABEL).map_err(io_failure)?;
     drop(placeholder);
-    if fs::rename(database, &aside).is_err() {
+    if let Err(error) = fs::rename(database, &aside) {
         let _ = fs::remove_file(&aside);
-        return Err(UpgradeError::Busy);
+        return Err(io_failure(error));
     }
     for (from, to) in journals(database).iter().zip(journals(&aside)) {
-        if from.exists() && fs::rename(from, &to).is_err() {
+        if !from.exists() {
+            continue;
+        }
+        if let Err(error) = fs::rename(from, &to) {
+            let refused = io_failure(error);
             return Err(match put_back(&aside, database) {
-                Ok(()) => UpgradeError::Busy,
+                Ok(()) => refused,
                 Err(stuck) => stuck,
             });
         }
@@ -810,25 +944,23 @@ fn move_aside(database: &Path) -> Result<PathBuf, UpgradeError> {
     Ok(aside)
 }
 
-/// Returns a file moved aside, with its journals, to the database path,
-/// unless something already took that path.
+/// Returns a file moved aside, with its journals, to the database path. It
+/// waits while another handle holds that path, replaces an empty file there,
+/// and never overwrites anything else.
 fn put_back(aside: &Path, database: &Path) -> Result<(), UpgradeError> {
-    let stuck = |reason: String| {
+    let stuck = |error: io::Error| {
         UpgradeError::from(failure(format!(
-            "{reason}. Los datos anteriores están en {}",
+            "{error}. Los datos anteriores están en {}",
             aside.display()
         )))
     };
-    if database.exists() {
-        return Err(stuck(format!("Ya existe {}", database.display())));
-    }
     for (from, to) in journals(aside).iter().zip(journals(database)) {
         if from.exists() {
-            fs::rename(from, &to).map_err(|error| stuck(error.to_string()))?;
+            retrying(|| fs::rename(from, &to)).map_err(stuck)?;
         }
     }
 
-    fs::rename(aside, database).map_err(|error| stuck(error.to_string()))
+    place(aside, database).map_err(stuck)
 }
 
 /// Moves the locked database out of WAL mode, which first writes its WAL into
@@ -1752,7 +1884,7 @@ mod tests {
         let folder = Folder::new();
         let database = eighth_schema(&folder).await;
 
-        let copy = upgrade_aside(&database, "20270115-030000", |_| {})
+        let copy = upgrade_aside(&database, "20270115-030000", &mut no_probe)
             .await
             .unwrap();
 
@@ -1772,7 +1904,10 @@ mod tests {
         let database = eighth_schema(&folder).await;
         let mut seen = None;
 
-        upgrade_aside(&database, "20270115-030000", |path| {
+        upgrade_aside(&database, "20270115-030000", &mut |step, path| {
+            if step != Step::Aside {
+                return Ok(());
+            }
             let found = AsideFiles::find(path).expect("the database is aside");
             // `open` is async; it runs on its own thread and runtime here.
             let opened = std::thread::scope(|scope| {
@@ -1788,6 +1923,7 @@ mod tests {
                     .unwrap()
             });
             seen = Some((found, opened, path.exists()));
+            Ok(())
         })
         .await
         .unwrap();
@@ -1823,9 +1959,12 @@ mod tests {
         let bytes = fs::read(&database).unwrap();
         let names = folder.names();
 
-        let refused = upgrade_aside(&database, "20270115-030000", |_| {}).await;
+        let refused = upgrade_aside(&database, "20270115-030000", &mut no_probe).await;
 
-        assert!(matches!(refused, Err(UpgradeError::Busy)), "{refused:?}");
+        assert!(
+            matches!(refused, Err(UpgradeError::Busy { safety_copy: None })),
+            "{refused:?}"
+        );
         assert!(fs::read(&database).unwrap() == bytes);
         assert_eq!(folder.names(), names);
         other.close().await;
@@ -1838,7 +1977,7 @@ mod tests {
         sqlite(&database, "ALTER TABLE leads ADD COLUMN origin TEXT;");
         let bytes = fs::read(&database).unwrap();
 
-        let failed = upgrade_aside(&database, "20270115-030000", |_| {}).await;
+        let failed = upgrade_aside(&database, "20270115-030000", &mut no_probe).await;
 
         let Err(UpgradeError::Failed {
             safety_copy: Some(copy),
@@ -1850,5 +1989,122 @@ mod tests {
         assert!(fs::read(&database).unwrap() == bytes);
         assert_eq!(sqlite(&copy, SELECT_SCHEMA_VERSION), "8");
         assert_eq!(folder.names().len(), 2, "{:?}", folder.names());
+    }
+
+    #[tokio::test]
+    async fn an_empty_file_another_tool_creates_in_the_gap_never_strands_the_database() {
+        let folder = Folder::new();
+        let database = eighth_schema(&folder).await;
+
+        // The `sqlite3` tool creates an empty file when it opens a missing path.
+        let upgraded = upgrade_aside(&database, "20270115-030000", &mut |step, path| {
+            if step == Step::Aside {
+                fs::write(path, b"")?;
+            }
+            Ok(())
+        })
+        .await;
+
+        assert!(upgraded.is_ok(), "{upgraded:?}");
+        assert_eq!(sqlite(&database, SELECT_SCHEMA_VERSION), "9");
+        assert_eq!(sqlite(&database, "SELECT name FROM leads"), "Minera");
+        assert!(!folder.names().iter().any(|name| name.contains("aparte")));
+    }
+
+    #[test]
+    fn held_file_errors_are_busy_on_each_platform() {
+        for code in [5, 32, 33] {
+            assert!(busy_os_error(code, true), "Windows {code}");
+        }
+        for code in [2, 3, 112] {
+            assert!(!busy_os_error(code, true), "Windows {code}");
+        }
+        for code in [16, 26] {
+            assert!(busy_os_error(code, false), "Unix {code}");
+        }
+        for code in [2, 5, 13, 28] {
+            assert!(!busy_os_error(code, false), "Unix {code}");
+        }
+        let held = io::Error::from_raw_os_error(HELD);
+        assert!(matches!(io_failure(held), UpgradeError::Busy { .. }));
+        let real = io::Error::other("disco lleno");
+        assert!(matches!(io_failure(real), UpgradeError::Failed { .. }));
+    }
+
+    /// An OS error that means "held by another handle" on this platform.
+    const HELD: i32 = if cfg!(windows) { 32 } else { 16 };
+
+    #[tokio::test]
+    async fn every_failure_point_puts_the_original_back() {
+        for step in [Step::Aside, Step::Copy, Step::Swap] {
+            for held in [true, false] {
+                let folder = Folder::new();
+                let database = eighth_schema(&folder).await;
+                let bytes = fs::read(&database).unwrap();
+                let names = folder.names();
+
+                let failed = upgrade_aside(&database, "20270115-030000", &mut |at, _| match (
+                    at == step,
+                    held,
+                ) {
+                    (false, _) => Ok(()),
+                    (true, true) => Err(io::Error::from_raw_os_error(HELD)),
+                    (true, false) => Err(io::Error::other("fallo simulado")),
+                })
+                .await;
+
+                let case = format!("{step:?}, held {held}: {failed:?}");
+                assert!(fs::read(&database).unwrap() == bytes, "{case}");
+                assert_eq!(sqlite(&database, SELECT_SCHEMA_VERSION), "8", "{case}");
+                let left: Vec<String> = folder
+                    .names()
+                    .into_iter()
+                    .filter(|name| !names.contains(name))
+                    .collect();
+                if held {
+                    assert!(
+                        matches!(failed, Err(UpgradeError::Busy { safety_copy: None })),
+                        "{case}"
+                    );
+                    assert!(left.is_empty(), "{case}: {left:?}");
+                } else {
+                    assert!(matches!(failed, Err(UpgradeError::Failed { .. })), "{case}");
+                    assert!(
+                        left.iter().all(|name| name.contains("antes-de-migrar")),
+                        "{case}: {left:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_file_with_content_in_the_gap_is_never_overwritten() {
+        let folder = Folder::new();
+        let database = eighth_schema(&folder).await;
+
+        let failed = upgrade_aside(&database, "20270115-030000", &mut |step, path| {
+            if step == Step::Swap {
+                fs::write(path, b"de otro programa")?;
+            }
+            Ok(())
+        })
+        .await;
+
+        let Err(UpgradeError::Failed { error, .. }) = failed else {
+            panic!("{failed:?}");
+        };
+        assert_eq!(fs::read(&database).unwrap(), b"de otro programa");
+        let moved: Vec<String> = folder
+            .names()
+            .into_iter()
+            .filter(|name| name.contains("aparte"))
+            .collect();
+        assert_eq!(moved.len(), 1);
+        assert!(error.0.contains(&moved[0]), "{}", error.0);
+        assert_eq!(
+            sqlite(&folder.0.join(&moved[0]), SELECT_SCHEMA_VERSION),
+            "8"
+        );
     }
 }
