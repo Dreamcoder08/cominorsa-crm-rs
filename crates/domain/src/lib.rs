@@ -8,7 +8,7 @@ mod settings;
 mod whatsapp;
 
 pub use lead::{DomainError, Lead, LeadRecord, NewLead, Stage};
-pub use prospect::{Prospect, ProspectKind, ProspectRepository};
+pub use prospect::{Prospect, ProspectKind, ProspectRepository, TaxRecord};
 pub use repository::{LeadRepository, RepositoryError};
 pub use ruc::Ruc;
 pub use settings::{Settings, SettingsRepository, ThemePreference};

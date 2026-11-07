@@ -1,7 +1,7 @@
 use std::{env, fs, path::PathBuf};
 
 use cominorsa_domain::{ProspectKind, ProspectRepository};
-use cominorsa_importer::{ImportError, parse_prospects, run};
+use cominorsa_importer::{ImportError, enrich, parse_prospects, parse_tax_records, run};
 use cominorsa_storage::SqliteLeads;
 use uuid::Uuid;
 
@@ -59,6 +59,38 @@ fn rejects_duplicate_titleholders() {
     assert!(matches!(error, ImportError::Duplicate { line: 3 }));
 }
 
+const TAX_HEADER: &str = "titular,match,ruc,razon_social,estado,condicion,ubigeo,domicilio";
+
+#[test]
+fn parses_only_rows_with_a_ruc_and_marks_approximate_matches() {
+    let text = format!(
+        "{TAX_HEADER}\nExacta,unico,20123456786,EXACTA SAC,ACTIVO,HABIDO,200101,CAL UNO\nCerca,aproximado,20100070970,CERCA SAC,ACTIVO,HABIDO,200101,CAL DOS\nNada,sin_coincidencia,,,,,,\n"
+    );
+
+    let records = parse_tax_records(text.as_bytes()).unwrap();
+
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].0, "Exacta");
+    assert!(!records[0].1.approximate);
+    assert!(records[1].1.approximate);
+}
+
+#[test]
+fn rejects_an_invalid_ruc_without_echoing_it() {
+    let text = format!("{TAX_HEADER}\nMala,unico,20999999999,MALA,ACTIVO,HABIDO,200101,CAL\n");
+
+    let error = parse_tax_records(text.as_bytes()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        ImportError::InvalidValue {
+            line: 2,
+            column: "ruc"
+        }
+    ));
+    assert!(!error.to_string().contains("20999999999"));
+}
+
 struct Scratch(PathBuf);
 
 impl Scratch {
@@ -102,4 +134,33 @@ async fn imports_both_files_once_and_writes_nothing_when_one_is_invalid() {
     assert_eq!(repeated.added, 0);
     assert_eq!(repeated.total, 2);
     assert!(repeated.backup.is_some_and(|path| path.exists()));
+}
+
+#[tokio::test]
+async fn enriches_an_existing_database_after_backing_it_up() {
+    let scratch = Scratch::new();
+    let companies = scratch.write("companies.csv", &file(&[VALID]));
+    let people = scratch.write(
+        "people.csv",
+        &file(&[&VALID.replace("Empresa Demo", "Persona Demo")]),
+    );
+    let tax = scratch.write(
+        "tax.csv",
+        &format!(
+            "{TAX_HEADER}\nEmpresa Demo,unico,20123456786,EMPRESA DEMO,ACTIVO,HABIDO,200101,CAL\n"
+        ),
+    );
+    let database = scratch.0.join("crm.db");
+    run(&database, &companies, &people).await.unwrap();
+
+    let report = enrich(&database, &tax).await.unwrap();
+
+    assert_eq!(report.updated, 1);
+    assert!(report.backup.exists());
+    let store = SqliteLeads::open(&database).await.unwrap();
+    assert!(
+        store.search("20123456786", 5).await.unwrap()[0]
+            .tax
+            .is_some()
+    );
 }

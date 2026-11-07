@@ -1,8 +1,8 @@
 use std::{env, path::PathBuf, process::ExitCode};
 
-use cominorsa_importer::run;
+use cominorsa_importer::{enrich, run};
 
-const USAGE: &str = "Uso: cominorsa-import --db <crm.db> <empresas.csv> <personas.csv>";
+const USAGE: &str = "Uso:\n  cominorsa-import --db <crm.db> <empresas.csv> <personas.csv>\n  cominorsa-import --db <crm.db> --sunat <empresas-sunat.csv>";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -14,6 +14,20 @@ async fn main() -> ExitCode {
     if flag != "--db" {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
+    }
+
+    if companies == "--sunat" {
+        return match enrich(&PathBuf::from(database), &PathBuf::from(people)).await {
+            Ok(report) => {
+                println!("Empresas actualizadas: {}", report.updated);
+                println!("Copia previa: {}", report.backup.display());
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::FAILURE
+            }
+        };
     }
 
     let result = run(

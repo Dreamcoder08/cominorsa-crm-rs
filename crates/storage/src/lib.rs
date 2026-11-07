@@ -4,7 +4,7 @@ use std::{fs, path::Path};
 
 use cominorsa_domain::{
     Lead, LeadRecord, LeadRepository, Prospect, ProspectKind, ProspectRepository, RepositoryError,
-    Settings, SettingsRepository, ThemePreference,
+    Settings, SettingsRepository, TaxRecord, ThemePreference,
 };
 use sqlx::{
     Row, SqlitePool,
@@ -33,13 +33,19 @@ const INSERT_PROSPECT: &str = "INSERT INTO prospects (kind, name, profile, conce
     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
     ON CONFLICT (kind, name) DO NOTHING";
 
+const APPLY_TAX_RECORD: &str = "UPDATE prospects SET ruc = ?2, tax_status = ?3,
+        tax_condition = ?4, fiscal_address = ?5, tax_match_approximate = ?6
+    WHERE kind = 'company' AND name = ?1";
+
 const SEARCH_PROSPECTS: &str = "SELECT kind, name, profile, concessions, hectares, departments,
-        provinces, substances, concession_states, potential_service, needs_review, source
+        provinces, substances, concession_states, potential_service, needs_review, source,
+        ruc, tax_status, tax_condition, fiscal_address, tax_match_approximate
     FROM prospects
     WHERE name LIKE ?1 ESCAPE '\\' OR name LIKE ?3 ESCAPE '\\'
         OR departments LIKE ?1 ESCAPE '\\' OR departments LIKE ?3 ESCAPE '\\'
         OR provinces LIKE ?1 ESCAPE '\\' OR provinces LIKE ?3 ESCAPE '\\'
         OR potential_service LIKE ?1 ESCAPE '\\' OR potential_service LIKE ?3 ESCAPE '\\'
+        OR ruc LIKE ?1 ESCAPE '\\'
     ORDER BY needs_review, concessions DESC, name
     LIMIT ?2";
 
@@ -239,6 +245,31 @@ impl ProspectRepository for SqliteLeads {
         Ok(added)
     }
 
+    async fn apply_tax_records(
+        &self,
+        records: &[(String, TaxRecord)],
+    ) -> Result<usize, RepositoryError> {
+        let mut transaction = self.pool.begin().await.map_err(failure)?;
+        let mut updated = 0;
+
+        for (name, record) in records {
+            let result = sqlx::query(APPLY_TAX_RECORD)
+                .bind(name)
+                .bind(&record.ruc)
+                .bind(&record.status)
+                .bind(&record.condition)
+                .bind(&record.address)
+                .bind(record.approximate)
+                .execute(&mut *transaction)
+                .await
+                .map_err(failure)?;
+            updated += result.rows_affected() as usize;
+        }
+
+        transaction.commit().await.map_err(failure)?;
+        Ok(updated)
+    }
+
     async fn count(&self) -> Result<usize, RepositoryError> {
         let row = sqlx::query("SELECT COUNT(*) AS total FROM prospects")
             .fetch_one(&self.pool)
@@ -396,7 +427,28 @@ fn to_prospect(row: &SqliteRow) -> Result<Prospect, RepositoryError> {
         potential_service: row.try_get("potential_service").map_err(failure)?,
         needs_review: row.try_get("needs_review").map_err(failure)?,
         source: row.try_get("source").map_err(failure)?,
+        tax: to_tax_record(row)?,
     })
+}
+
+fn to_tax_record(row: &SqliteRow) -> Result<Option<TaxRecord>, RepositoryError> {
+    let ruc: Option<String> = row.try_get("ruc").map_err(failure)?;
+    let Some(ruc) = ruc else {
+        return Ok(None);
+    };
+    let text = |column: &str| -> Result<String, RepositoryError> {
+        let value: Option<String> = row.try_get(column).map_err(failure)?;
+        Ok(value.unwrap_or_default())
+    };
+    let approximate: Option<bool> = row.try_get("tax_match_approximate").map_err(failure)?;
+
+    Ok(Some(TaxRecord {
+        ruc,
+        status: text("tax_status")?,
+        condition: text("tax_condition")?,
+        address: text("fiscal_address")?,
+        approximate: approximate.unwrap_or(false),
+    }))
 }
 
 fn to_lead(row: &SqliteRow) -> Result<Lead, RepositoryError> {

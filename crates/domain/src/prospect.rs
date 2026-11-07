@@ -33,6 +33,17 @@ impl ProspectKind {
     }
 }
 
+/// Public taxpayer data from the SUNAT roll. It holds no phone or email.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaxRecord {
+    pub ruc: String,
+    pub status: String,
+    pub condition: String,
+    pub address: String,
+    /// The name matched without its legal form, so a person must confirm it.
+    pub approximate: bool,
+}
+
 /// A concession titleholder who may become a lead.
 ///
 /// Sources carry no contact data, so a prospect has no phone or RUC. Its
@@ -51,6 +62,7 @@ pub struct Prospect {
     pub potential_service: String,
     pub needs_review: bool,
     pub source: String,
+    pub tax: Option<TaxRecord>,
 }
 
 /// Prospect persistence port.
@@ -59,6 +71,12 @@ pub trait ProspectRepository: Send + Sync {
     fn import(
         &self,
         prospects: &[Prospect],
+    ) -> impl Future<Output = Result<usize, RepositoryError>> + Send;
+
+    /// Updates company prospects by name atomically and returns how many changed.
+    fn apply_tax_records(
+        &self,
+        records: &[(String, TaxRecord)],
     ) -> impl Future<Output = Result<usize, RepositoryError>> + Send;
 
     fn count(&self) -> impl Future<Output = Result<usize, RepositoryError>> + Send;

@@ -2,7 +2,7 @@ use std::{borrow::Cow, env, fs, path::PathBuf};
 
 use cominorsa_domain::{
     Lead, LeadRepository, NewLead, Prospect, ProspectKind, ProspectRepository, Settings,
-    SettingsRepository, Stage, ThemePreference,
+    SettingsRepository, Stage, TaxRecord, ThemePreference,
 };
 use cominorsa_storage::SqliteLeads;
 use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
@@ -105,6 +105,7 @@ fn prospect(name: &str, kind: ProspectKind, concessions: u32) -> Prospect {
         potential_service: "IGAFOM + REINFO".to_owned(),
         needs_review: false,
         source: "Synthetic".to_owned(),
+        tax: None,
     }
 }
 
@@ -453,4 +454,83 @@ async fn forgets_backup_settings_that_were_cleared() {
     store.persist(&settings).await.unwrap();
 
     assert_eq!(store.load().await.unwrap().backup_directory(), None);
+}
+
+fn tax_record(ruc: &str, approximate: bool) -> TaxRecord {
+    TaxRecord {
+        ruc: ruc.to_owned(),
+        status: "ACTIVO".to_owned(),
+        condition: "HABIDO".to_owned(),
+        address: "CAL DEMO 123".to_owned(),
+        approximate,
+    }
+}
+
+#[tokio::test]
+async fn enriches_only_matching_companies_and_can_search_by_ruc() {
+    let database = TempDatabase::new();
+    let store = SqliteLeads::open(&database.path()).await.unwrap();
+    store
+        .import(&[
+            prospect("Empresa Uno", ProspectKind::Company, 2),
+            prospect("Empresa Uno", ProspectKind::Person, 1),
+        ])
+        .await
+        .unwrap();
+
+    let updated = store
+        .apply_tax_records(&[
+            ("Empresa Uno".to_owned(), tax_record("20123456786", true)),
+            ("Inexistente".to_owned(), tax_record("20100070970", false)),
+        ])
+        .await
+        .unwrap();
+
+    assert_eq!(updated, 1);
+    let found = store.search("20123456786", 10).await.unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].kind, ProspectKind::Company);
+    assert_eq!(found[0].tax, Some(tax_record("20123456786", true)));
+}
+
+#[tokio::test]
+async fn keeps_everything_when_upgrading_from_the_fourth_schema() {
+    let database = TempDatabase::new();
+    fs::create_dir_all(database.path().parent().unwrap()).unwrap();
+    let options = SqliteConnectOptions::new()
+        .filename(database.path())
+        .create_if_missing(true);
+    let old = SqlitePool::connect_with(options).await.unwrap();
+    let mut fourth_schema = sqlx::migrate!("./migrations");
+    fourth_schema.migrations = Cow::Owned(
+        fourth_schema
+            .migrations
+            .iter()
+            .filter(|migration| migration.version <= 4)
+            .cloned()
+            .collect(),
+    );
+    fourth_schema.run(&old).await.unwrap();
+    sqlx::query(
+        "INSERT INTO leads VALUES ('00000000-0000-7000-8000-000000000001', 'Antiguo',
+            '900000000', NULL, 'DAC', 'quote_sent', '2026-11-01', 'Ana')",
+    )
+    .execute(&old)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO prospects VALUES ('company', 'Titular', 'OTRO_estado', 1, 2.5, 'PIURA',
+            'SULLANA', 'M', 'TITULADA', 'REVISAR_MANUAL', 1, 'Synthetic')",
+    )
+    .execute(&old)
+    .await
+    .unwrap();
+    old.close().await;
+
+    let upgraded = SqliteLeads::open(&database.path()).await.unwrap();
+
+    assert_eq!(upgraded.list().await.unwrap()[0].owner(), Some("Ana"));
+    let prospects = upgraded.search("", 10).await.unwrap();
+    assert_eq!(prospects.len(), 1);
+    assert_eq!(prospects[0].tax, None);
 }

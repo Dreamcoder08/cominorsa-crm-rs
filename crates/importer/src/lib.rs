@@ -11,7 +11,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use cominorsa_domain::{Prospect, ProspectKind, ProspectRepository, RepositoryError};
+use cominorsa_domain::{
+    Prospect, ProspectKind, ProspectRepository, RepositoryError, Ruc, TaxRecord,
+};
 use cominorsa_storage::SqliteLeads;
 use csv::{ReaderBuilder, StringRecord};
 use thiserror::Error;
@@ -29,6 +31,16 @@ const COLUMNS: [&str; 11] = [
     "revisar_manual",
     "fuente_dato",
 ];
+
+const TAX_COLUMNS: [&str; 6] = [
+    "titular",
+    "match",
+    "ruc",
+    "estado",
+    "condicion",
+    "domicilio",
+];
+const APPROXIMATE_MATCH: &str = "aproximado";
 
 #[derive(Debug, Error)]
 pub enum ImportError {
@@ -51,6 +63,69 @@ pub struct ImportReport {
     pub added: usize,
     pub total: usize,
     pub backup: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+pub struct EnrichReport {
+    pub updated: usize,
+    pub backup: PathBuf,
+}
+
+/// Reads rows with a RUC. Rows without one stay out, never guessed.
+pub fn parse_tax_records(source: impl Read) -> Result<Vec<(String, TaxRecord)>, ImportError> {
+    let bytes = strip_bom(source)?;
+    let mut reader = ReaderBuilder::new().from_reader(bytes.as_slice());
+    let headers = reader.headers().map_err(unreadable)?.clone();
+    let positions = positions_of(&TAX_COLUMNS, &headers)?;
+    let mut records = Vec::new();
+
+    for record in reader.records() {
+        let record = record.map_err(unreadable)?;
+        let line = record.position().map_or(0, |position| position.line());
+        let text = |index: usize| record.get(positions[index]).unwrap_or("").trim().to_owned();
+        let ruc = text(2);
+        if ruc.is_empty() {
+            continue;
+        }
+        Ruc::parse(&ruc).map_err(|_| ImportError::InvalidValue {
+            line,
+            column: "ruc",
+        })?;
+
+        records.push((
+            text(0),
+            TaxRecord {
+                ruc,
+                status: text(3),
+                condition: text(4),
+                address: text(5),
+                approximate: text(1) == APPROXIMATE_MATCH,
+            },
+        ));
+    }
+
+    if records.is_empty() {
+        return Err(ImportError::NoRows);
+    }
+    Ok(records)
+}
+
+/// Validates the file first, then backs up the database before writing.
+pub async fn enrich(database: &Path, tax_file: &Path) -> Result<EnrichReport, ImportError> {
+    let records = parse_tax_records(File::open(tax_file).map_err(unreadable)?)?;
+    if !database.exists() {
+        return Err(ImportError::Unreadable(
+            "La base de datos no existe".to_owned(),
+        ));
+    }
+
+    let store = SqliteLeads::open(database).await?;
+    let backup = backup_path(database);
+    store.backup_to(&backup).await?;
+    let updated = store.apply_tax_records(&records).await?;
+    store.close().await;
+
+    Ok(EnrichReport { updated, backup })
 }
 
 pub fn parse_prospects(
@@ -167,12 +242,20 @@ impl Row<'_> {
                 _ => return Err(self.invalid(9)),
             },
             source: self.text(10),
+            tax: None,
         })
     }
 }
 
 fn column_positions(headers: &StringRecord) -> Result<Vec<usize>, ImportError> {
-    COLUMNS
+    positions_of(&COLUMNS, headers)
+}
+
+fn positions_of(
+    columns: &[&'static str],
+    headers: &StringRecord,
+) -> Result<Vec<usize>, ImportError> {
+    columns
         .iter()
         .map(|column| {
             headers
