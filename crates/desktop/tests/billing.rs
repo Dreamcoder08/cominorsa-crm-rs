@@ -30,6 +30,8 @@ fn lead(name: &str, service: &str, advances: usize) -> Lead {
         follow_up_on: TODAY,
     })
     .unwrap();
+    lead.record_consent(TODAY, "El cliente inició el contacto")
+        .unwrap();
     for _ in 0..advances {
         lead.advance().unwrap();
     }

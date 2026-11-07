@@ -2,6 +2,7 @@
 
 mod billing;
 mod case;
+mod consent;
 mod lead;
 mod prospect;
 mod quote;
@@ -18,6 +19,7 @@ pub use case::{
     Case, CaseClosure, CaseFile, CaseRecord, CaseRepository, CaseStatus, CaseStep, CaseStepRecord,
     ProcedureTemplate, TemplateStep, procedure_template, renewal_date,
 };
+pub use consent::{Consent, INBOUND_CONSENT_SOURCE, LeadOrigin};
 pub use lead::{DomainError, Lead, LeadRecord, NewLead, Stage};
 pub use prospect::{Prospect, ProspectKind, ProspectRepository, TaxRecord};
 pub use quote::{

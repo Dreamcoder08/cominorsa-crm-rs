@@ -20,9 +20,9 @@ use cominorsa_application::{
     default_follow_up, edit_milestone, edit_quote, find_case, find_lead, find_milestone,
     find_quote, find_stored_case, format_soles, lead_quotes, migrate_database,
     milestone_gap_warning, open_for_reading, open_for_writing, parse_prospect_kind, preview_quote,
-    reschedule_step, restore_backup, run_backup, save_quote_edit, save_quote_pdf, search_leads,
-    send_quote, set_paid, set_step_done, snapshot, status, suggested_total_note, update_settings,
-    whatsapp_link, whatsapp_preview,
+    record_consent, reschedule_step, restore_backup, revoke_consent, run_backup, save_quote_edit,
+    save_quote_pdf, search_leads, send_quote, set_paid, set_step_done, snapshot, status,
+    suggested_total_note, update_settings, whatsapp_link, whatsapp_preview,
 };
 use cominorsa_domain::{
     BillingSummary, CaseRepository, LeadRepository, ProspectRepository, Quote, QuoteRepository,
@@ -190,6 +190,7 @@ async fn lead(path: &Path, command: LeadCommand, context: &mut Context) -> Resul
             ruc,
             owner,
             follow_up,
+            origin,
         } => {
             let store = open_for_writing(path).await?;
             let follow_up_on = match follow_up {
@@ -203,6 +204,7 @@ async fn lead(path: &Path, command: LeadCommand, context: &mut Context) -> Resul
                 service,
                 owner: owner.unwrap_or_default(),
                 follow_up_on,
+                origin: origin.unwrap_or_default(),
             };
             let added = add_lead(&store, values, context).await?;
             store.close().await;
@@ -298,6 +300,20 @@ async fn lead(path: &Path, command: LeadCommand, context: &mut Context) -> Resul
             let url = whatsapp_link(&store, id).await?;
             store.close().await;
             Reply::new(json!({"url": url}), url.clone())
+        }
+        LeadCommand::Consent { id, source } => {
+            let store = open_for_writing(path).await?;
+            let lead = record_consent(&store, id, &source, context.clock.today()).await?;
+            store.close().await;
+            let text = format!("Consentimiento registrado para {}.", lead.name());
+            Reply::new(json!({"lead": views::lead(&lead)}), text)
+        }
+        LeadCommand::RevokeConsent { id, source } => {
+            let store = open_for_writing(path).await?;
+            let lead = revoke_consent(&store, id, &source, context.clock.today()).await?;
+            store.close().await;
+            let text = format!("Consentimiento retirado para {}.", lead.name());
+            Reply::new(json!({"lead": views::lead(&lead)}), text)
         }
     };
 

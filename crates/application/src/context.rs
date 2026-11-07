@@ -132,6 +132,8 @@ impl Ids {
             stage: lead.stage().code().to_owned(),
             follow_up_on: lead.follow_up_on(),
             renewal_of: lead.renewal_of(),
+            origin: lead.origin().code().to_owned(),
+            consent: lead.consent().cloned(),
         })
     }
 

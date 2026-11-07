@@ -21,6 +21,12 @@ pub fn lead(lead: &Lead) -> Value {
         "stage": lead.stage().code(),
         "follow_up_on": lead.follow_up_on().to_string(),
         "renewal_of": lead.renewal_of().map(|id| id.to_string()),
+        "origin": lead.origin().code(),
+        "consent": lead.consent().map(|consent| json!({
+            "given": consent.given,
+            "recorded_on": consent.recorded_on.to_string(),
+            "source": consent.source,
+        })),
     })
 }
 

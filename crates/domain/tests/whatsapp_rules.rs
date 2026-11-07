@@ -1,15 +1,22 @@
-use cominorsa_domain::{DomainError, Lead, NewLead, Settings, render_message, whatsapp_number};
+use cominorsa_domain::{
+    DomainError, Lead, LeadOrigin, NewLead, Settings, render_message, whatsapp_number,
+};
 use time::macros::date;
 
+/// A lead that wrote first, so it has consent.
 fn lead(phone: &str) -> Lead {
-    Lead::create(NewLead {
-        name: "Minera Peña".to_owned(),
-        phone: phone.to_owned(),
-        ruc: None,
-        service: "REINFO & DAC".to_owned(),
-        owner: None,
-        follow_up_on: date!(2026 - 11 - 10),
-    })
+    Lead::receive(
+        NewLead {
+            name: "Minera Peña".to_owned(),
+            phone: phone.to_owned(),
+            ruc: None,
+            service: "REINFO & DAC".to_owned(),
+            owner: None,
+            follow_up_on: date!(2026 - 11 - 10),
+        },
+        LeadOrigin::InboundWhatsapp,
+        date!(2026 - 11 - 07),
+    )
     .unwrap()
 }
 

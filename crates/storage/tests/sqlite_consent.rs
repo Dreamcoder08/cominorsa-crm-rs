@@ -1,8 +1,9 @@
 use std::{borrow::Cow, env, fs, path::PathBuf};
 
-use cominorsa_domain::{LeadRepository, SettingsRepository};
+use cominorsa_domain::{Consent, Lead, LeadOrigin, LeadRepository, NewLead, SettingsRepository};
 use cominorsa_storage::SqliteLeads;
 use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions};
+use time::macros::date;
 use uuid::Uuid;
 
 struct TempDatabase(PathBuf);
@@ -84,6 +85,11 @@ async fn keeps_every_lead_when_upgrading_from_the_eighth_schema() {
     assert_eq!(leads[0].owner(), Some("Ana"));
     assert_eq!(leads[1].client_name(), "Otra");
     assert!(leads[1].renewal_of().is_some());
+    for lead in &leads {
+        assert_eq!(lead.origin(), LeadOrigin::Other);
+        assert_eq!(lead.consent(), None);
+        assert_eq!(lead.whatsapp_url("Hola"), None);
+    }
     let settings = upgraded.load().await.unwrap();
     assert_eq!(settings.follow_up_days(), 9);
     assert_eq!(settings.last_backup_at(), Some(1_700_000_000));
@@ -104,4 +110,72 @@ async fn keeps_every_lead_when_upgrading_from_the_eighth_schema() {
         assert_eq!(row.get::<Option<String>, _>("consent_source"), None);
     }
     raw.close().await;
+}
+
+fn received(origin: LeadOrigin) -> Lead {
+    Lead::receive(
+        NewLead {
+            name: "Minera Ejemplo".to_owned(),
+            phone: "987654321".to_owned(),
+            ruc: None,
+            service: "DAC".to_owned(),
+            owner: None,
+            follow_up_on: date!(2026 - 11 - 10),
+        },
+        origin,
+        date!(2026 - 11 - 07),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn origin_and_consent_survive_a_reopen_and_a_revocation() {
+    let database = TempDatabase::new();
+    let store = SqliteLeads::open(&database.path()).await.unwrap();
+    let inbound = received(LeadOrigin::InboundCall);
+    let mut revoked = received(LeadOrigin::Referral);
+    revoked
+        .record_consent(date!(2026 - 11 - 08), "Aceptó por correo")
+        .unwrap();
+    revoked
+        .revoke_consent(date!(2026 - 11 - 09), "Pidió no recibir mensajes")
+        .unwrap();
+    store.save(&inbound).await.unwrap();
+    store.save(&revoked).await.unwrap();
+    store.close().await;
+
+    let reopened = SqliteLeads::open(&database.path()).await.unwrap();
+    let leads = reopened.list().await.unwrap();
+    reopened.close().await;
+
+    let found = |id| leads.iter().find(|lead| lead.id() == id).unwrap();
+    assert_eq!(found(inbound.id()), &inbound);
+    assert_eq!(found(inbound.id()).origin(), LeadOrigin::InboundCall);
+    assert_eq!(found(revoked.id()), &revoked);
+    assert_eq!(
+        found(revoked.id()).consent(),
+        Some(&Consent {
+            given: false,
+            recorded_on: date!(2026 - 11 - 09),
+            source: "Pidió no recibir mensajes".to_owned(),
+        })
+    );
+}
+
+#[tokio::test]
+async fn refuses_a_lead_with_an_incomplete_consent_record() {
+    let database = TempDatabase::new();
+    let store = SqliteLeads::open(&database.path()).await.unwrap();
+    store.save(&received(LeadOrigin::WebForm)).await.unwrap();
+    store.close().await;
+    let raw = raw_pool(&database.path()).await;
+    sqlx::query("UPDATE leads SET consent_on = NULL")
+        .execute(&raw)
+        .await
+        .unwrap();
+    raw.close().await;
+
+    let reopened = SqliteLeads::open(&database.path()).await.unwrap();
+    assert!(reopened.list().await.is_err());
+    reopened.close().await;
 }

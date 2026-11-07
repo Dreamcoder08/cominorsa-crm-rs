@@ -21,6 +21,8 @@ fn sample(name: &str, follow_up_on: Date, advances: usize) -> Lead {
         follow_up_on,
     })
     .unwrap();
+    lead.record_consent(TODAY, "El cliente inició el contacto")
+        .unwrap();
     for _ in 0..advances {
         lead.advance().unwrap();
     }
@@ -229,12 +231,13 @@ fn form(date: &str, ruc: &str) -> FormValues {
         service: "REINFO".to_owned(),
         owner: "Ana".to_owned(),
         follow_up_on: date.to_owned(),
+        origin: String::new(),
     }
 }
 
 #[test]
 fn parses_form_values_into_a_lead() {
-    let lead = parse_form(form("2026-11-10", "20123456786")).unwrap();
+    let lead = parse_form(form("2026-11-10", "20123456786"), TODAY).unwrap();
 
     assert_eq!(lead.name(), "Minera");
     assert_eq!(lead.owner(), Some("Ana"));
@@ -244,11 +247,11 @@ fn parses_form_values_into_a_lead() {
 #[test]
 fn explains_invalid_form_values() {
     assert_eq!(
-        parse_form(form("", "")).unwrap_err(),
+        parse_form(form("", ""), TODAY).unwrap_err(),
         "Ingresa la fecha de seguimiento"
     );
     assert_eq!(
-        parse_form(form("2026-11-10", "123")).unwrap_err(),
+        parse_form(form("2026-11-10", "123"), TODAY).unwrap_err(),
         "El RUC no es válido"
     );
 }

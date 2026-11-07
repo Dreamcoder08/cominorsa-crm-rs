@@ -7,12 +7,12 @@ use cominorsa_application::{
     AppError, BillingEdit, Clock, Context, ErrorKind, FormValues, Ids, MilestoneValues, PdfTarget,
     ProspectConversion, QuoteEdit, QuoteLineValues, QuoteValues, SettingsChange, add_lead,
     advance_lead, agenda, apply_billing, assign_lead, close_case, convert_prospect, create_backup,
-    find_case, find_quote, find_stored_case, migrate_database, open_for_reading, reschedule_step,
-    restore_backup, run_backup, save_quote_edit, save_quote_pdf, send_quote, set_step_done,
-    snapshot, status, update_settings,
+    find_case, find_quote, find_stored_case, migrate_database, open_for_reading, record_consent,
+    reschedule_step, restore_backup, revoke_consent, run_backup, save_quote_edit, save_quote_pdf,
+    send_quote, set_step_done, snapshot, status, update_settings, whatsapp_link,
 };
 use cominorsa_domain::{
-    CaseRepository, DomainError, IgvRate, LeadRepository, Prospect, ProspectKind,
+    CaseRepository, DomainError, IgvRate, LeadOrigin, LeadRepository, Prospect, ProspectKind,
     ProspectRepository, QuoteRepository, QuoteStatus, RepositoryError, SettingsRepository, Stage,
     TaxRecord,
 };
@@ -353,6 +353,66 @@ async fn converting_a_prospect_prefills_a_lead_due_today() {
     assert_eq!(
         added.lead.ruc().map(|ruc| ruc.as_str()),
         Some("20100070970")
+    );
+}
+
+#[tokio::test]
+async fn a_converted_prospect_has_origin_prospect_and_no_consent() {
+    let scratch = Scratch::new();
+    let store = SqliteLeads::open(&scratch.database()).await.unwrap();
+    store
+        .import(&[prospect("Empresa Demo", "DAC", None)])
+        .await
+        .unwrap();
+
+    let added = convert_prospect(
+        &store,
+        ProspectConversion {
+            name: "Empresa Demo".to_owned(),
+            phone: "987654321".to_owned(),
+            ..ProspectConversion::default()
+        },
+        &mut context("p"),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(added.lead.origin(), LeadOrigin::Prospect);
+    assert_eq!(added.lead.consent(), None);
+    assert_eq!(
+        whatsapp_link(&store, added.lead.id())
+            .await
+            .unwrap_err()
+            .code(),
+        "no_consent"
+    );
+}
+
+#[tokio::test]
+async fn consent_recorded_through_the_use_case_is_stored_with_its_date() {
+    let scratch = Scratch::new();
+    let store = SqliteLeads::open(&scratch.database()).await.unwrap();
+    let lead = add_lead(&store, form("Referida", "DAC"), &mut context("c"))
+        .await
+        .unwrap()
+        .lead;
+
+    record_consent(&store, lead.id(), "Aceptó por llamada", TODAY)
+        .await
+        .unwrap();
+    assert!(whatsapp_link(&store, lead.id()).await.is_ok());
+    revoke_consent(&store, lead.id(), "Pidió no recibir mensajes", TODAY)
+        .await
+        .unwrap();
+
+    let stored = store.list().await.unwrap();
+    let consent = stored[0].consent().unwrap();
+    assert!(!consent.given);
+    assert_eq!(consent.recorded_on, TODAY);
+    assert_eq!(consent.source, "Pidió no recibir mensajes");
+    assert_eq!(
+        whatsapp_link(&store, lead.id()).await.unwrap_err().code(),
+        "no_consent"
     );
 }
 

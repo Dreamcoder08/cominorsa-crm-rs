@@ -39,7 +39,7 @@ scripts/e2e-cli.sh
 | Group | Commands |
 |---|---|
 | State | `init`, `status`, `export`, `agenda`, `migrate` |
-| `lead` | `add`, `list`, `show`, `summary`, `advance`, `assign`, `whatsapp` |
+| `lead` | `add`, `list`, `show`, `summary`, `advance`, `assign`, `whatsapp`, `consent`, `revoke-consent` |
 | `prospect` | `import`, `enrich`, `search`, `count`, `convert` |
 | `case` | `list`, `show`, `close` |
 | `step` | `done`, `undo`, `date` |
@@ -81,8 +81,8 @@ Output is Spanish for people. With `--json`, stdout holds one document on succes
 | Exit | Error codes |
 |---|---|
 | 1 | Records: `lead_not_found`, `case_not_found`, `case_not_active`, `step_not_found`, `milestone_not_found`, `quote_not_found`, `prospect_not_found`, `prospect_ambiguous`, `member_not_found` |
-| 1 | Values: `missing_field`, `invalid_ruc`, `invalid_date`, `invalid_amount`, `invalid_quantity`, `invalid_igv_rate`, `invalid_follow_up_days`, `invalid_quote_validity`, `invalid_theme`, `invalid_kind`, `unknown_placeholder`, `empty_quote`, `no_whatsapp_number` |
-| 1 | Rules: `final_stage`, `contract_not_signed`, `owner_not_in_team`, `duplicate_member`, `missing_contract_total`, `milestones_already_planned`, `quote_locked`, `quote_superseded`, `invalid_quote_transition`, `company_name_missing`, `backup_folder_missing`, `id_seed_reused` |
+| 1 | Values: `missing_field`, `invalid_ruc`, `invalid_date`, `invalid_amount`, `invalid_quantity`, `invalid_igv_rate`, `invalid_follow_up_days`, `invalid_quote_validity`, `invalid_theme`, `invalid_kind`, `unknown_placeholder`, `empty_quote`, `no_whatsapp_number`, `invalid_origin` |
+| 1 | Rules: `final_stage`, `contract_not_signed`, `owner_not_in_team`, `duplicate_member`, `missing_contract_total`, `milestones_already_planned`, `quote_locked`, `quote_superseded`, `invalid_quote_transition`, `company_name_missing`, `backup_folder_missing`, `id_seed_reused`, `no_consent` |
 | 1 | Files: `database_exists`, `import_invalid`, `import_unreadable`, `pdf_failed`, `pdf_target_exists`, `pdf_target_is_database` |
 | 2 | `usage`, `missing_database` |
 | 3 | `database_missing`, `schema_outdated`, `schema_newer`, `migration_failed`, `storage_error`, `corrupt_record`, `backup_folder_unavailable`, `pdf_write_failed`, `runtime_error` |
@@ -96,6 +96,14 @@ For reproducible runs, `--today <AAAA-MM-DD>` fixes the day, `--now <seconds>` f
 `quote preview --line` returns the totals of some lines at the stored IGV rate, and `settings whatsapp-preview` renders the stored template for a sample client, or a `--template` to try; neither saves anything. `lead show` and each row of `lead list` add `follow_up`, the status for the day: `overdue`, `today`, `upcoming`, or `closed`. Commands that change a quote add `notice`, the sentence the app shows.
 
 `export` returns `schema_version`, `leads`, `cases`, `quotes`, `quote_counters`, `prospects`, and `settings` in a stable order, including closed cases with nothing left to collect. `status` returns `schema_version`, `integrity_check`, and `counts`.
+
+## Origin and consent
+
+Each lead records its origin and its last consent decision: given or revoked, with the date and the source text. `lead add --origin` takes `web_form`, `inbound_whatsapp`, `inbound_call`, `referral`, `event`, `existing_client`, `prospect`, or `other`, the default. The first three mean the client started the contact, so the lead records consent "El cliente inició el contacto" dated that day. `prospect convert` creates a lead with origin `prospect` and no consent. A renewal lead has origin `existing_client` and copies the consent of the lead that opened the case.
+
+`lead consent <id> --source <text>` records consent dated that day, and `lead revoke-consent <id> --source <text>` withdraws current consent; revoking a lead without current consent answers `no_consent`. `lead whatsapp` answers `no_consent` unless the last decision is a given consent, and the app hides the chat link the same way. Legal review of these rules is pending.
+
+Leads stored before schema 9 get origin `other` and no consent when the database is upgraded, so the app and `lead whatsapp` stop offering their chat until someone records consent for each one.
 
 ## App icon
 
@@ -157,7 +165,8 @@ Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adap
 | Billing | Tracks collections only; it does not issue tax invoices or receipts. The 30 / 40 / 30 split comes from an unvalidated example |
 | Renewals | Only DAC suggests a renewal, 12 months after closing, pending client validation; a service naming DAC with others renews as a whole. A closed case with unpaid milestones stays listed until they are paid |
 | Follow-up alerts | Visible only while the app is open |
-| Leads from the website or WhatsApp | Registered manually; there is no automatic intake |
+| Leads from the website or WhatsApp | Registered manually with their origin; there is no automatic intake |
+| Consent | Recorded by people, with no proof attached; rules pending legal review. Older leads have none until it is recorded |
 | Prospects | Concession titleholders without phone, RUC, or email; potential service is inferred, not verified |
 | Backups | Manual to a user-chosen folder, automatic before an import, and verified restore from Settings; no scheduled backup yet |
 | Disk encryption | Not provided by the app; enable it on the laptop |

@@ -690,6 +690,10 @@ fn the_pipeline_summary_uses_the_injected_day() {
 fn whatsapp_only_prints_a_prepared_url() {
     let scratch = Scratch::new();
     let lead = add_lead(&scratch.db(), "a", "Lead", "DAC");
+    data(&run(
+        &scratch.db(),
+        &["lead", "consent", &lead, "--source", "Aceptó por llamada"],
+    ));
 
     let found = data(&run(&scratch.db(), &["lead", "whatsapp", &lead]));
 
@@ -711,6 +715,8 @@ fn a_phone_without_a_chat_number_gets_no_url() {
             "12",
             "--service",
             "DAC",
+            "--origin",
+            "inbound_call",
         ],
     );
     let lead = text(&data(&output)["lead"]["id"]).to_owned();
@@ -1011,6 +1017,10 @@ fn reads_leave_the_database_file_byte_identical() {
     data(&run(&scratch.db(), &import));
     let (lead, case) = signed(&scratch.db(), "s", "DAC");
     quote(&scratch.db(), &lead);
+    data(&run(
+        &scratch.db(),
+        &["lead", "consent", &lead, "--source", "Aceptó por llamada"],
+    ));
     let case = text(&case["id"]);
     let pdf = scratch.file("lectura.pdf");
     let before = fs::read(scratch.db()).unwrap();

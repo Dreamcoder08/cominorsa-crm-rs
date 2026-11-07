@@ -33,7 +33,8 @@ pub use inspect::{
 };
 pub use leads::{
     Advance, FormValues, NewLeadOutcome, add_lead, advance_lead, assign_lead, default_follow_up,
-    find_lead, parse_form, save_advance, search_leads, whatsapp_link,
+    find_lead, parse_form, parse_origin, record_consent, revoke_consent, save_advance,
+    search_leads, whatsapp_link,
 };
 pub use presentation::{
     AgendaGroups, AgendaItem, FollowUp, PipelineSummary, QUOTE_TAX_NOTE, accepted_notice,

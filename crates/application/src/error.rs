@@ -90,6 +90,8 @@ impl From<DomainError> for AppError {
             DomainError::InvalidIgvRate => "invalid_igv_rate",
             DomainError::QuoteLocked => "quote_locked",
             DomainError::InvalidQuoteTransition => "invalid_quote_transition",
+            DomainError::NoConsent => "no_consent",
+            DomainError::NoWhatsappNumber => "no_whatsapp_number",
         };
 
         Self::rejected(code, error.to_string())

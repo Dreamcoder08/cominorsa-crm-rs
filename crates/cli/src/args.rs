@@ -117,6 +117,10 @@ pub enum LeadCommand {
         /// Próximo seguimiento; por defecto, según la configuración
         #[arg(long, value_name = "AAAA-MM-DD")]
         follow_up: Option<String>,
+        /// web_form, inbound_whatsapp, inbound_call, referral, event, existing_client,
+        /// prospect u other (por defecto). Los tres primeros registran el consentimiento
+        #[arg(long, value_name = "ORIGEN")]
+        origin: Option<String>,
     },
     /// Lista los leads
     List {
@@ -136,8 +140,22 @@ pub enum LeadCommand {
         #[arg(long)]
         owner: String,
     },
-    /// Imprime el enlace de un chat preparado. No envía nada
+    /// Imprime el enlace de un chat preparado si hay consentimiento vigente. No envía nada
     Whatsapp { id: Uuid },
+    /// Registra con fecha de hoy que el cliente aceptó ser contactado
+    Consent {
+        id: Uuid,
+        /// Cómo lo aceptó, por ejemplo «Aceptó por llamada»
+        #[arg(long, value_name = "TEXTO")]
+        source: String,
+    },
+    /// Registra con fecha de hoy que el cliente retiró su consentimiento
+    RevokeConsent {
+        id: Uuid,
+        /// Cómo lo retiró, por ejemplo «Pidió no recibir mensajes»
+        #[arg(long, value_name = "TEXTO")]
+        source: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]

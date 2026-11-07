@@ -4,10 +4,10 @@ use std::{collections::HashMap, fs, path::Path};
 
 use cominorsa_domain::{
     BillingMilestone, BillingMilestoneRecord, BillingRepository, Case, CaseClosure, CaseFile,
-    CaseRecord, CaseRepository, CaseStep, CaseStepRecord, CompanyProfile, Lead, LeadRecord,
-    LeadRepository, Money, Prospect, ProspectKind, ProspectRepository, Quote, QuoteDraft,
-    QuoteLineRecord, QuoteNumber, QuoteRecord, QuoteRepository, QuoteStatus, RepositoryError,
-    Settings, SettingsRepository, TaxRecord, ThemePreference,
+    CaseRecord, CaseRepository, CaseStep, CaseStepRecord, CompanyProfile, Consent, Lead,
+    LeadRecord, LeadRepository, Money, Prospect, ProspectKind, ProspectRepository, Quote,
+    QuoteDraft, QuoteLineRecord, QuoteNumber, QuoteRecord, QuoteRepository, QuoteStatus,
+    RepositoryError, Settings, SettingsRepository, TaxRecord, ThemePreference,
 };
 use sqlx::{
     Row, Sqlite, SqliteExecutor, SqlitePool, Transaction,
@@ -18,8 +18,8 @@ use time::{Date, format_description::well_known::Iso8601};
 use uuid::Uuid;
 
 const UPSERT: &str = "INSERT INTO leads (id, name, phone, ruc, service, stage, follow_up_on, owner,
-        renewal_of_case)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        renewal_of_case, origin, consent_given, consent_on, consent_source)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
     ON CONFLICT (id) DO UPDATE SET
         name = excluded.name,
         phone = excluded.phone,
@@ -28,10 +28,14 @@ const UPSERT: &str = "INSERT INTO leads (id, name, phone, ruc, service, stage, f
         stage = excluded.stage,
         follow_up_on = excluded.follow_up_on,
         owner = excluded.owner,
-        renewal_of_case = excluded.renewal_of_case";
+        renewal_of_case = excluded.renewal_of_case,
+        origin = excluded.origin,
+        consent_given = excluded.consent_given,
+        consent_on = excluded.consent_on,
+        consent_source = excluded.consent_source";
 
 const SELECT_ALL: &str = "SELECT id, name, phone, ruc, service, stage, follow_up_on, owner,
-        renewal_of_case
+        renewal_of_case, origin, consent_given, consent_on, consent_source
     FROM leads ORDER BY follow_up_on, id";
 
 const INSERT_CASE: &str = "INSERT INTO cases (id, lead_id, client_name, ruc, service, owner,
@@ -463,6 +467,13 @@ async fn upsert_lead<'e>(
         .bind(lead.follow_up_on().to_string())
         .bind(lead.owner())
         .bind(lead.renewal_of().map(|case| case.to_string()))
+        .bind(lead.origin().code())
+        .bind(lead.consent().map(|consent| consent.given))
+        .bind(
+            lead.consent()
+                .map(|consent| consent.recorded_on.to_string()),
+        )
+        .bind(lead.consent().map(|consent| consent.source.as_str()))
         .execute(executor)
         .await
         .map_err(failure)?;
@@ -1068,6 +1079,22 @@ fn to_lead(row: &SqliteRow) -> Result<Lead, RepositoryError> {
     let id: String = row.try_get("id").map_err(failure)?;
     let follow_up_on: String = row.try_get("follow_up_on").map_err(failure)?;
     let renewal_of: Option<String> = row.try_get("renewal_of_case").map_err(failure)?;
+    let consent = match (
+        row.try_get::<Option<bool>, _>("consent_given")
+            .map_err(failure)?,
+        row.try_get::<Option<String>, _>("consent_on")
+            .map_err(failure)?,
+        row.try_get::<Option<String>, _>("consent_source")
+            .map_err(failure)?,
+    ) {
+        (None, None, None) => None,
+        (Some(given), Some(recorded_on), Some(source)) => Some(Consent {
+            given,
+            recorded_on: Date::parse(&recorded_on, &Iso8601::DATE).map_err(failure)?,
+            source,
+        }),
+        _ => return Err(failure("Consentimiento guardado incompleto")),
+    };
 
     Lead::restore(LeadRecord {
         id: Uuid::parse_str(&id).map_err(failure)?,
@@ -1082,6 +1109,8 @@ fn to_lead(row: &SqliteRow) -> Result<Lead, RepositoryError> {
             .map(|case| Uuid::parse_str(&case))
             .transpose()
             .map_err(failure)?,
+        origin: row.try_get("origin").map_err(failure)?,
+        consent,
     })
     .map_err(failure)
 }

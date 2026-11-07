@@ -2,7 +2,7 @@ use thiserror::Error;
 use time::Date;
 use uuid::Uuid;
 
-use crate::{Case, Ruc, whatsapp};
+use crate::{Case, Consent, LeadOrigin, Ruc, whatsapp};
 
 const RENEWAL_PREFIX: &str = "Renovación: ";
 
@@ -42,6 +42,10 @@ pub enum DomainError {
     QuoteLocked,
     #[error("La cotización no admite ese cambio de estado")]
     InvalidQuoteTransition,
+    #[error("El cliente no tiene un consentimiento vigente para recibir mensajes")]
+    NoConsent,
+    #[error("Ese teléfono no sirve para abrir un chat")]
+    NoWhatsappNumber,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,6 +120,8 @@ pub struct LeadRecord {
     pub stage: String,
     pub follow_up_on: Date,
     pub renewal_of: Option<Uuid>,
+    pub origin: String,
+    pub consent: Option<Consent>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,9 +135,12 @@ pub struct Lead {
     stage: Stage,
     follow_up_on: Date,
     renewal_of: Option<Uuid>,
+    origin: LeadOrigin,
+    consent: Option<Consent>,
 }
 
 impl Lead {
+    /// A lead with origin "other" and no consent.
     pub fn create(input: NewLead) -> Result<Self, DomainError> {
         Ok(Self {
             id: Uuid::now_v7(),
@@ -143,26 +152,49 @@ impl Lead {
             stage: Stage::InitialContact,
             follow_up_on: input.follow_up_on,
             renewal_of: None,
+            origin: LeadOrigin::Other,
+            consent: None,
         })
     }
 
+    /// A lead from a known origin. One the client started records consent
+    /// dated `today`; any other origin starts without consent.
+    pub fn receive(input: NewLead, origin: LeadOrigin, today: Date) -> Result<Self, DomainError> {
+        let mut lead = Self::create(input)?;
+        lead.origin = origin;
+        lead.consent = origin.is_inbound().then(|| Consent::inbound(today));
+
+        Ok(lead)
+    }
+
     /// A new sales opportunity for the client of a closed case.
-    pub(crate) fn renewal(case: &Case, phone: &str, follow_up_on: Date) -> Self {
+    /// It keeps the consent of `source`, the lead that opened the case.
+    pub(crate) fn renewal(case: &Case, source: &Lead, follow_up_on: Date) -> Self {
         Self {
             id: Uuid::now_v7(),
             name: format!("{RENEWAL_PREFIX}{}", case.client_name()),
-            phone: phone.to_owned(),
+            phone: source.phone.clone(),
             ruc: case.ruc().cloned(),
             service: case.service().to_owned(),
             owner: case.owner().map(str::to_owned),
             stage: Stage::InitialContact,
             follow_up_on,
             renewal_of: Some(case.id()),
+            origin: LeadOrigin::ExistingClient,
+            consent: source.consent.clone(),
         }
     }
 
     pub fn restore(record: LeadRecord) -> Result<Self, DomainError> {
         let corrupt = |_| DomainError::CorruptRecord;
+        let origin = LeadOrigin::from_code(&record.origin).ok_or(DomainError::CorruptRecord)?;
+        if record
+            .consent
+            .as_ref()
+            .is_some_and(|consent| consent.source.trim().is_empty())
+        {
+            return Err(DomainError::CorruptRecord);
+        }
 
         Ok(Self {
             id: record.id,
@@ -174,7 +206,37 @@ impl Lead {
             stage: Stage::from_code(&record.stage).ok_or(DomainError::CorruptRecord)?,
             follow_up_on: record.follow_up_on,
             renewal_of: record.renewal_of,
+            origin,
+            consent: record.consent,
         })
+    }
+
+    /// Records that the client agreed to be contacted, and how.
+    pub fn record_consent(&mut self, on: Date, source: &str) -> Result<(), DomainError> {
+        self.consent = Some(Consent {
+            given: true,
+            recorded_on: on,
+            source: required(source, "fuente")?,
+        });
+        Ok(())
+    }
+
+    /// Records that the client withdrew its consent, and how.
+    pub fn revoke_consent(&mut self, on: Date, source: &str) -> Result<(), DomainError> {
+        if !self.has_consent() {
+            return Err(DomainError::NoConsent);
+        }
+        self.consent = Some(Consent {
+            given: false,
+            recorded_on: on,
+            source: required(source, "fuente")?,
+        });
+        Ok(())
+    }
+
+    /// Whether the last consent decision is a given one.
+    pub fn has_consent(&self) -> bool {
+        self.consent.as_ref().is_some_and(|consent| consent.given)
     }
 
     /// Blank clears the responsible person.
@@ -192,12 +254,21 @@ impl Lead {
         self.stage != Stage::ContractSigned && self.follow_up_on <= today
     }
 
-    /// Prepared chat link, or `None` when the phone cannot use WhatsApp.
-    pub fn whatsapp_url(&self, template: &str) -> Option<String> {
-        let number = whatsapp::whatsapp_number(&self.phone)?;
+    /// Prepared chat link. It needs current consent and a phone that can use
+    /// WhatsApp.
+    pub fn whatsapp_link(&self, template: &str) -> Result<String, DomainError> {
+        if !self.has_consent() {
+            return Err(DomainError::NoConsent);
+        }
+        let number = whatsapp::whatsapp_number(&self.phone).ok_or(DomainError::NoWhatsappNumber)?;
         let message = whatsapp::render_message(template, self.client_name(), &self.service);
 
-        Some(whatsapp::chat_url(&number, &message))
+        Ok(whatsapp::chat_url(&number, &message))
+    }
+
+    /// Prepared chat link, or `None` when `whatsapp_link` refuses.
+    pub fn whatsapp_url(&self, template: &str) -> Option<String> {
+        self.whatsapp_link(template).ok()
     }
 
     pub fn id(&self) -> Uuid {
@@ -243,6 +314,14 @@ impl Lead {
 
     pub fn follow_up_on(&self) -> Date {
         self.follow_up_on
+    }
+
+    pub fn origin(&self) -> LeadOrigin {
+        self.origin
+    }
+
+    pub fn consent(&self) -> Option<&Consent> {
+        self.consent.as_ref()
     }
 }
 

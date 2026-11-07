@@ -465,7 +465,7 @@ impl CaseClosure {
     /// renewal only enters the sales queue; sending anything stays human.
     pub fn of(mut case: Case, source: &Lead, closed_on: Date) -> Self {
         let renewal = renewal_date(case.service(), closed_on)
-            .map(|follow_up_on| Lead::renewal(&case, source.phone(), follow_up_on));
+            .map(|follow_up_on| Lead::renewal(&case, source, follow_up_on));
         case.close();
 
         Self { case, renewal }

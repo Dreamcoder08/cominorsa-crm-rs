@@ -187,6 +187,11 @@ CSV
     expect "lead list repeats the follow-up of lead show" \
         "$(cli lead show "$lead" | jq -c '.follow_up')" \
         "$(cli lead list | jq -c '.leads[0].follow_up')"
+    expect "a converted prospect has origin prospect" prospect "$(cli lead show "$lead" | jq -r '.lead.origin')"
+    expect "a converted prospect starts without consent" null "$(cli lead show "$lead" | jq -c '.lead.consent')"
+    refused 1 no_consent lead whatsapp "$lead"
+    consent="$(cli lead consent "$lead" --source "Aceptó por llamada" | jq -cS '.lead.consent')"
+    expect "recorded consent" '{"given":true,"recorded_on":"'"$day"'","source":"Aceptó por llamada"}' "$consent"
     url="$(cli lead whatsapp "$lead" | jq -r '.url')"
     expect "only a prepared WhatsApp URL" "https://wa.me/51987654321" "${url%%\?*}"
 
@@ -277,6 +282,8 @@ CSV
     expect "closed" true "$(jq '.closed' <<<"$closed")"
     expect "renewal in the first stage" initial_contact "$(jq -r '.renewal.stage' <<<"$closed")"
     expect "renewal follow-up" "2027-03-02" "$(jq -r '.renewal.follow_up_on' <<<"$closed")"
+    expect "a renewal is an existing client" existing_client "$(jq -r '.renewal.origin' <<<"$closed")"
+    expect "a renewal inherits consent" "$consent" "$(jq -cS '.renewal.consent' <<<"$closed")"
     hash_before="$(state_hash)"
     expect "a repeated close changes nothing" false "$(cli case close "$case" | jq '.closed')"
     expect "state after a repeated close" "$hash_before" "$(state_hash)"
@@ -438,6 +445,35 @@ expect "tried template preview" "Sobre REINFO" "$(cli settings whatsapp-preview 
 expect "follow-up status" upcoming "$(cli lead show "$dos" | jq -r '.follow_up.status')"
 expect "a quote change carries its notice" "$segunda marcada como rechazada." \
     "$(cli quote reject "$segunda" | jq -r '.notice')"
+db=crm.db
+
+echo "== consent decides the prepared chat"
+db=seeds.db
+inbound="$(cli lead add --name Entrante --phone 987654351 --service DAC --origin web_form | jq -c '.lead')"
+expect "inbound origin" web_form "$(jq -r '.origin' <<<"$inbound")"
+expect "inbound consent" '{"given":true,"recorded_on":"'"$day"'","source":"El cliente inició el contacto"}' \
+    "$(jq -cS '.consent' <<<"$inbound")"
+url="$(cli lead whatsapp "$(jq -r '.id' <<<"$inbound")" | jq -r '.url')"
+expect "an inbound lead opens the chat" "https://wa.me/51987654351" "${url%%\?*}"
+for origin in referral event existing_client prospect other; do
+    added="$(cli lead add --name "Origen $origin" --phone 987654352 --service DAC --origin "$origin" | jq -c '.lead')"
+    expect "origin $origin" "$origin" "$(jq -r '.origin' <<<"$added")"
+    expect "no consent from $origin" null "$(jq -c '.consent' <<<"$added")"
+done
+referred="$(cli lead add --name Referida --phone 987654353 --service DAC --origin referral | jq -r '.lead.id')"
+expect "no origin means other" other "$(cli lead add --name Simple --phone 987654354 --service DAC | jq -r '.lead.origin')"
+refused 1 no_consent lead whatsapp "$referred"
+refused 1 invalid_origin lead add --name X --phone 987654355 --service DAC --origin email
+refused 1 missing_field lead consent "$referred" --source " "
+refused 1 no_consent lead revoke-consent "$referred" --source "Sin consentimiento previo"
+refused 1 lead_not_found lead consent "$no_id" --source "Aceptó"
+cli lead consent "$referred" --source "Aceptó en persona" >/dev/null
+expect "recorded consent opens the chat" true "$(cli lead whatsapp "$referred" | jq '.url | startswith("https://wa.me/51987654353")')"
+revoked="$(cli lead revoke-consent "$referred" --source "Pidió no recibir mensajes" | jq -cS '.lead.consent')"
+expect "revoked consent" '{"given":false,"recorded_on":"'"$day"'","source":"Pidió no recibir mensajes"}' "$revoked"
+refused 1 no_consent lead whatsapp "$referred"
+expect "export keeps the revocation" "$revoked" \
+    "$(cli export | jq -cS --arg id "$referred" '.leads[] | select(.id == $id) | .consent')"
 db=crm.db
 
 echo "== an older schema is reported, never migrated by a read"

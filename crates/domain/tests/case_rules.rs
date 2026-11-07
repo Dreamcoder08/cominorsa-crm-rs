@@ -322,6 +322,8 @@ fn restored_lead(name: &str, renewal_of: Option<Uuid>) -> Lead {
         stage: "initial_contact".to_owned(),
         follow_up_on: SIGNED_ON,
         renewal_of,
+        origin: "other".to_owned(),
+        consent: None,
     })
     .unwrap()
 }
@@ -376,7 +378,10 @@ fn a_second_renewal_does_not_stack_the_label() {
 
 #[test]
 fn a_prepared_message_greets_the_client_not_the_renewal_label() {
-    let renewal = restored_lead("Renovación: Minera Ejemplo", Some(Uuid::now_v7()));
+    let mut renewal = restored_lead("Renovación: Minera Ejemplo", Some(Uuid::now_v7()));
+    renewal
+        .record_consent(SIGNED_ON, "El cliente inició el contacto")
+        .unwrap();
 
     let url = renewal.whatsapp_url("Hola {nombre}").unwrap();
 

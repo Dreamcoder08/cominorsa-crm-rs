@@ -1,7 +1,7 @@
 //! Registering leads and moving them through the pipeline.
 
 use cominorsa_domain::{
-    CaseFile, CaseRepository, Lead, LeadRepository, NewLead, Prospect, QuoteRepository,
+    CaseFile, CaseRepository, Lead, LeadOrigin, LeadRepository, NewLead, Prospect, QuoteRepository,
     SettingsRepository, Stage, procedure_template,
 };
 use time::{Date, format_description::well_known::Iso8601};
@@ -24,6 +24,8 @@ pub struct FormValues {
     pub service: String,
     pub owner: String,
     pub follow_up_on: String,
+    /// An origin code; blank means "other".
+    pub origin: String,
 }
 
 impl FormValues {
@@ -53,23 +55,42 @@ impl FormValues {
             name: prospect.name.clone(),
             ruc,
             service: service.to_owned(),
+            origin: LeadOrigin::Prospect.code().to_owned(),
             ..Self::starting_on(follow_up_on)
         }
     }
 }
 
-pub fn parse_form(values: FormValues) -> Result<Lead, AppError> {
+pub fn parse_origin(code: &str) -> Result<LeadOrigin, AppError> {
+    match code.trim() {
+        "" => Ok(LeadOrigin::Other),
+        code => LeadOrigin::from_code(code).ok_or_else(|| {
+            AppError::rejected(
+                "invalid_origin",
+                "Indica web_form, inbound_whatsapp, inbound_call, referral, event, existing_client, prospect u other",
+            )
+        }),
+    }
+}
+
+/// Builds the lead. One the client started records consent dated `today`.
+pub fn parse_form(values: FormValues, today: Date) -> Result<Lead, AppError> {
     let follow_up_on = Date::parse(&values.follow_up_on, &Iso8601::DATE)
         .map_err(|_| AppError::invalid_date("Ingresa la fecha de seguimiento"))?;
+    let origin = parse_origin(&values.origin)?;
 
-    Ok(Lead::create(NewLead {
-        name: values.name,
-        phone: values.phone,
-        ruc: Some(values.ruc),
-        service: values.service,
-        owner: Some(values.owner),
-        follow_up_on,
-    })?)
+    Ok(Lead::receive(
+        NewLead {
+            name: values.name,
+            phone: values.phone,
+            ruc: Some(values.ruc),
+            service: values.service,
+            owner: Some(values.owner),
+            follow_up_on,
+        },
+        origin,
+        today,
+    )?)
 }
 
 /// A lead after `add_lead`. `created` is false for a repeated seeded request.
@@ -86,6 +107,7 @@ fn same_request(stored: &Lead, requested: &Lead) -> bool {
         && stored.service() == requested.service()
         && stored.owner() == requested.owner()
         && stored.follow_up_on() == requested.follow_up_on()
+        && stored.origin() == requested.origin()
 }
 
 /// Only someone on the team can be responsible for a lead. A lead may have no
@@ -120,7 +142,9 @@ pub async fn add_lead<R>(
 where
     R: LeadRepository + SettingsRepository,
 {
-    let lead = context.ids.lead(parse_form(values)?)?;
+    let lead = context
+        .ids
+        .lead(parse_form(values, context.clock.today())?)?;
 
     if context.ids.is_seeded() {
         let stored = repository.list().await?;
@@ -168,6 +192,7 @@ pub async fn search_leads<R: LeadRepository>(
 }
 
 /// The prepared chat link of a lead. A person reviews and sends the message.
+/// It needs current consent and a phone that can use WhatsApp.
 pub async fn whatsapp_link<R>(repository: &R, id: Uuid) -> Result<String, AppError>
 where
     R: LeadRepository + SettingsRepository,
@@ -175,13 +200,35 @@ where
     let lead = find_lead(repository, id).await?;
     let settings = repository.load().await?;
 
-    lead.whatsapp_url(settings.whatsapp_template())
-        .ok_or_else(|| {
-            AppError::rejected(
-                "no_whatsapp_number",
-                "Ese teléfono no sirve para abrir un chat",
-            )
-        })
+    Ok(lead.whatsapp_link(settings.whatsapp_template())?)
+}
+
+/// Records, dated `today`, that the client agreed to be contacted.
+pub async fn record_consent<R: LeadRepository>(
+    repository: &R,
+    id: Uuid,
+    source: &str,
+    today: Date,
+) -> Result<Lead, AppError> {
+    let mut lead = find_lead(repository, id).await?;
+    lead.record_consent(today, source)?;
+    repository.save(&lead).await?;
+
+    Ok(lead)
+}
+
+/// Records, dated `today`, that the client withdrew its consent.
+pub async fn revoke_consent<R: LeadRepository>(
+    repository: &R,
+    id: Uuid,
+    source: &str,
+    today: Date,
+) -> Result<Lead, AppError> {
+    let mut lead = find_lead(repository, id).await?;
+    lead.revoke_consent(today, source)?;
+    repository.save(&lead).await?;
+
+    Ok(lead)
 }
 
 pub async fn find_lead<R: LeadRepository>(repository: &R, id: Uuid) -> Result<Lead, AppError> {
