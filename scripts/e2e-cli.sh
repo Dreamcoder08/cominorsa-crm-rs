@@ -12,8 +12,9 @@ for tool in jq sha256sum sqlite3; do
     fi
 done
 
-cargo build --quiet --locked -p cominorsa-cli
+cargo build --quiet --locked -p cominorsa-cli -p cominorsa-importer
 binary="$PWD/target/debug/cominorsa"
+importer="$PWD/target/debug/cominorsa-import"
 
 root="$(mktemp -d)"
 trap 'rm -rf "$root"' EXIT
@@ -115,6 +116,26 @@ refused_writes() {
     refused_on "$file" "$code" settings set --follow-up-days 5
     refused_on "$file" "$code" prospect import --companies none.csv --people none.csv
     refused_on "$file" "$code" backup create --folder copias-viejas
+}
+
+# importer_refused <file> <args...>: `cominorsa-import` refuses the database like
+# `cominorsa` does, with the same exit code and message, and the file keeps its
+# hash. The CLI import runs on the same files and is the reference.
+importer_refused() {
+    local file="$1"
+    shift
+    local status=0 expected="" before=""
+    [[ -e "$file" ]] && before="$(file_hash "$file")"
+    "$importer" --db "$file" "$@" >importer.out 2>importer.err || status=$?
+    "$binary" --db "$file" status >/dev/null 2>expected.err || expected=$?
+    expect "importer exit on $file" "$expected" "$status"
+    expect "importer stdout on $file" "" "$(cat importer.out)"
+    expect "importer message on $file" "$(cat expected.err)" "$(cat importer.err)"
+    if [[ -n "$before" ]]; then
+        expect "file hash after the importer on $file" "$before" "$(file_hash "$file")"
+    else
+        [[ ! -e "$file" ]] || fail "the importer created $file"
+    fi
 }
 
 # The whole sale. Paths in the data stay relative, so two runs store the same bytes.
@@ -443,7 +464,42 @@ message="$(jq -r '.error.message' old.err)"
 refused_writes old.db schema_outdated
 expect "a refused write leaves the schema" 7 "$(sqlite3 old.db 'SELECT MAX(version) FROM _sqlx_migrations')"
 
-echo "== a failed migration leaves the database and keeps its copy"
+echo "== the importer follows the same contract"
+cat >import-companies.csv <<CSV
+titular,perfil_icp,n_concesiones,hectareas_totales,departamentos,provincias,sustancias,estados_concesion,servicio_potencial,revisar_manual,fuente_dato
+Empresa Importada SAC,PERFIL_1_formalizacion,1,10,PIURA,SULLANA,M,TITULADA,DAC,FALSE,Synthetic
+CSV
+cat >import-tax.csv <<CSV
+titular,match,ruc,razon_social,estado,condicion,ubigeo,domicilio
+Empresa Importada SAC,unico,20123456786,EMPRESA IMPORTADA SAC,ACTIVO,HABIDO,200101,CAL UNO
+CSV
+for file in absent.db old.db; do
+    importer_refused "$file" import-companies.csv import-companies.csv
+    importer_refused "$file" --sunat import-tax.csv
+done
+status=0
+"$importer" --db absent.db import-companies.csv none.csv >importer.out 2>importer.err || status=$?
+expect "invalid input wins over the database" 1 "$status"
+[[ ! -e absent.db ]] || fail "invalid input created the database"
+"$binary" --db imported.db --json init >/dev/null
+sqlite3 imported.db "PRAGMA journal_mode = DELETE;" >/dev/null
+imported_hash="$(file_hash imported.db)"
+status=0
+"$importer" --db imported.db import-companies.csv none.csv >importer.out 2>importer.err || status=$?
+expect "invalid input on a current database" 1 "$status"
+expect "file hash after invalid input" "$imported_hash" "$(file_hash imported.db)"
+status=0
+"$importer" --db imported.db --sunat none.csv >importer.out 2>importer.err || status=$?
+expect "invalid tax file on a current database" 1 "$status"
+expect "file hash after an invalid tax file" "$imported_hash" "$(file_hash imported.db)"
+sed 's/Empresa Importada SAC/Persona Importada/' import-companies.csv >import-people.csv
+imported="$("$importer" --db imported.db import-companies.csv import-people.csv)"
+expect "the importer reports what it added" "Prospectos nuevos: 2" "$(sed -n 1p <<<"$imported")"
+expect "the importer reports the total" "Prospectos totales: 2" "$(sed -n 2p <<<"$imported")"
+[[ -f "$(sed -n 3p <<<"$imported" | sed 's/^Copia previa: //')" ]] || fail "the importer lost its copy"
+expect "the import reached the database" 2 "$("$binary" --db imported.db --json prospect count | jq '.data.total')"
+enriched="$("$importer" --db imported.db --sunat import-tax.csv)"
+expect "the importer reports what it enriched" "Empresas actualizadas: 1" "$(sed -n 1p <<<"$enriched")"
 cp old.db blocked.db
 sqlite3 blocked.db "CREATE TABLE quote_numbers (blocking TEXT);"
 blocked_hash="$(file_hash blocked.db)"
@@ -482,6 +538,8 @@ expect "exit on a newer schema" 3 "$status"
 expect "code on a newer schema" schema_newer "$(jq -r '.error.code' new.err)"
 expect "file hash on a newer schema" "$new_hash" "$(file_hash new.db)"
 refused_writes new.db schema_newer
+importer_refused new.db import-companies.csv import-people.csv
+importer_refused new.db --sunat import-tax.csv
 expect "a refused write keeps the journal mode" delete "$(sqlite3 new.db 'PRAGMA journal_mode')"
 cd - >/dev/null
 

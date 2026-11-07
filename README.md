@@ -109,13 +109,14 @@ A draft PDF says "Borrador" and uses the current company data. Marking a quote a
 
 ## Import prospects
 
-Keep source files outside this repository.
+Keep source files outside this repository. The importer follows the CLI contract: it never creates or upgrades a database, so create one first, by opening the app once or with `init`.
 
 ```sh
+cargo run -p cominorsa-cli -- --db <crm.db> init
 cargo run --release -p cominorsa-importer -- --db <crm.db> <companies.csv> <people.csv>
 ```
 
-The importer validates both files first, copies an existing database next to it as `crm.before-import-*.db`, and skips titleholders already loaded. Errors name lines and columns, never values. Close the app before importing.
+The importer validates its files first and exits with 1 when they are invalid, whatever the state of the database. It then refuses a missing database, naming `cominorsa init`, and an older or newer schema, with the messages of `cominorsa` and exit code 3, and the file stays byte-identical. Upgrade an older database with `cominorsa migrate`, or by opening the app. The Windows package does not include `cominorsa`, so there the app does both. A usable database is copied next to itself as `crm.before-import-*.db`, and titleholders already loaded are skipped. Errors name lines and columns, never values. Close the app before importing.
 
 ## Design system
 
@@ -127,7 +128,7 @@ Enrich company prospects with a prepared SUNAT file, kept outside this repositor
 cargo run --release -p cominorsa-importer -- --db <crm.db> --sunat <companies-sunat.csv>
 ```
 
-The file comes from the public reduced RUC roll, which has no phone or email. Approximate matches show "Confirmar RUC" and never prefill a lead.
+It needs an existing database at the current schema, like the import. The file comes from the public reduced RUC roll, which has no phone or email. Approximate matches show "Confirmar RUC" and never prefill a lead.
 
 ## Structure
 

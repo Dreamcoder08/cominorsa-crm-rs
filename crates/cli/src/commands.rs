@@ -66,6 +66,9 @@ impl From<ImportError> for Failure {
 
         Self::App(match error {
             ImportError::Storage(failure) => failure.into(),
+            ImportError::DatabaseMissing(_) => AppError::storage("database_missing", message),
+            ImportError::SchemaOutdated { .. } => AppError::storage("schema_outdated", message),
+            ImportError::SchemaNewer { .. } => AppError::storage("schema_newer", message),
             ImportError::Unreadable(_) => AppError::rejected("import_unreadable", message),
             ImportError::NoRows
             | ImportError::MissingColumn(_)
@@ -75,10 +78,10 @@ impl From<ImportError> for Failure {
     }
 }
 
-/// The importer opens the file itself, and that open migrates and creates, so
-/// a CLI import needs the same checks as every other write first.
-async fn ensure_writable(path: &Path) -> Result<(), AppError> {
-    open_for_writing(path).await?.close().await;
+/// The importer reads its files before it checks the database, while every CLI
+/// command checks the database first, so a CLI import checks it here.
+async fn ensure_usable(path: &Path) -> Result<(), AppError> {
+    open_for_reading(path).await?.close().await;
 
     Ok(())
 }
@@ -312,7 +315,7 @@ async fn prospect(
 ) -> Result<Reply, Failure> {
     let reply = match command {
         ProspectCommand::Import { companies, people } => {
-            ensure_writable(path).await?;
+            ensure_usable(path).await?;
             let report = import(path, &companies, &people).await?;
             let text = format!(
                 "Prospectos nuevos: {}\nProspectos totales: {}",
@@ -322,13 +325,13 @@ async fn prospect(
                 json!({
                     "added": report.added,
                     "total": report.total,
-                    "backup": optional_path(report.backup.as_deref()),
+                    "backup": report.backup.display().to_string(),
                 }),
                 text,
             )
         }
         ProspectCommand::Enrich { sunat } => {
-            ensure_writable(path).await?;
+            ensure_usable(path).await?;
             let report = enrich(path, &sunat).await?;
             let text = format!("Empresas actualizadas: {}", report.updated);
             Reply::new(

@@ -1,8 +1,19 @@
 use std::{env, path::PathBuf, process::ExitCode};
 
-use cominorsa_importer::{enrich, run};
+use cominorsa_importer::{ImportError, enrich, run};
 
+const EXIT_STORAGE: u8 = 3;
 const USAGE: &str = "Uso:\n  cominorsa-import --db <crm.db> <empresas.csv> <personas.csv>\n  cominorsa-import --db <crm.db> --sunat <empresas-sunat.csv>";
+
+fn fail(error: &ImportError) -> ExitCode {
+    eprintln!("{error}");
+
+    if error.is_database_refusal() {
+        ExitCode::from(EXIT_STORAGE)
+    } else {
+        ExitCode::FAILURE
+    }
+}
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -23,10 +34,7 @@ async fn main() -> ExitCode {
                 println!("Copia previa: {}", report.backup.display());
                 ExitCode::SUCCESS
             }
-            Err(error) => {
-                eprintln!("{error}");
-                ExitCode::FAILURE
-            }
+            Err(error) => fail(&error),
         };
     }
 
@@ -41,15 +49,9 @@ async fn main() -> ExitCode {
         Ok(report) => {
             println!("Prospectos nuevos: {}", report.added);
             println!("Prospectos totales: {}", report.total);
-            match report.backup {
-                Some(path) => println!("Copia previa: {}", path.display()),
-                None => println!("Copia previa: no hacía falta, la base era nueva"),
-            }
+            println!("Copia previa: {}", report.backup.display());
             ExitCode::SUCCESS
         }
-        Err(error) => {
-            eprintln!("{error}");
-            ExitCode::FAILURE
-        }
+        Err(error) => fail(&error),
     }
 }

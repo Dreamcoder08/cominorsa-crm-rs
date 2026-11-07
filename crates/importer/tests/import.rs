@@ -156,6 +156,9 @@ async fn imports_both_files_once_and_writes_nothing_when_one_is_invalid() {
     let broken = scratch.write("broken.csv", "nombre\nA\n");
     let database = scratch.0.join("crm.db");
 
+    let store = SqliteLeads::open(&database).await.unwrap();
+    store.close().await;
+
     assert!(run(&database, &companies, &broken).await.is_err());
     let store = SqliteLeads::open(&database).await.unwrap();
     assert_eq!(store.count().await.unwrap(), 0);
@@ -165,7 +168,7 @@ async fn imports_both_files_once_and_writes_nothing_when_one_is_invalid() {
     let repeated = run(&database, &companies, &people).await.unwrap();
     assert_eq!(repeated.added, 0);
     assert_eq!(repeated.total, 2);
-    assert!(repeated.backup.is_some_and(|path| path.exists()));
+    assert!(repeated.backup.exists());
 }
 
 #[tokio::test]
@@ -183,6 +186,7 @@ async fn enriches_an_existing_database_after_backing_it_up() {
         ),
     );
     let database = scratch.0.join("crm.db");
+    SqliteLeads::open(&database).await.unwrap().close().await;
     run(&database, &companies, &people).await.unwrap();
 
     let report = enrich(&database, &tax).await.unwrap();

@@ -4,6 +4,7 @@
 //! personal data.
 
 use std::{
+    cmp::Ordering,
     collections::HashSet,
     fs::File,
     io::Read,
@@ -55,15 +56,36 @@ pub enum ImportError {
     InvalidValue { line: u64, column: &'static str },
     #[error("Titular duplicado en la línea {line}")]
     Duplicate { line: u64 },
+    #[error("No existe la base de datos {}. Créala con: cominorsa init", .0.display())]
+    DatabaseMissing(PathBuf),
+    #[error(
+        "La base está en la versión {found} y este programa necesita la {required}. Actualízala con: cominorsa migrate"
+    )]
+    SchemaOutdated { found: i64, required: i64 },
+    #[error(
+        "La base está en la versión {found}, más nueva que la {required} que admite este programa. Actualiza el programa"
+    )]
+    SchemaNewer { found: i64, required: i64 },
     #[error(transparent)]
     Storage(#[from] RepositoryError),
+}
+
+impl ImportError {
+    /// Whether the database was refused, which the CLI contract reports as a
+    /// storage failure and not as a rejected input.
+    pub fn is_database_refusal(&self) -> bool {
+        matches!(
+            self,
+            Self::DatabaseMissing(_) | Self::SchemaOutdated { .. } | Self::SchemaNewer { .. }
+        )
+    }
 }
 
 #[derive(Debug)]
 pub struct ImportReport {
     pub added: usize,
     pub total: usize,
-    pub backup: Option<PathBuf>,
+    pub backup: PathBuf,
 }
 
 #[derive(Debug)]
@@ -125,16 +147,31 @@ pub fn parse_tax_records(source: impl Read) -> Result<Vec<(String, TaxRecord)>, 
     Ok(records)
 }
 
+/// Opens a database under the checks of every `cominorsa` write: it is never
+/// created or migrated, and a refused file stays as it was. The importer does
+/// not depend on the application crate, so the wording is repeated here, and
+/// `scripts/e2e-cli.sh` proves both messages match.
+async fn open_for_import(database: &Path) -> Result<SqliteLeads, ImportError> {
+    if !database.exists() {
+        return Err(ImportError::DatabaseMissing(database.to_path_buf()));
+    }
+
+    let reader = SqliteLeads::open_read_only(database).await?;
+    let found = reader.schema_version().await?;
+    reader.close().await;
+    let required = SqliteLeads::required_schema_version();
+
+    match found.cmp(&required) {
+        Ordering::Less => Err(ImportError::SchemaOutdated { found, required }),
+        Ordering::Greater => Err(ImportError::SchemaNewer { found, required }),
+        Ordering::Equal => Ok(SqliteLeads::open_existing(database).await?),
+    }
+}
+
 /// Validates the file first, then backs up the database before writing.
 pub async fn enrich(database: &Path, tax_file: &Path) -> Result<EnrichReport, ImportError> {
     let records = parse_tax_records(File::open(tax_file).map_err(unreadable)?)?;
-    if !database.exists() {
-        return Err(ImportError::Unreadable(
-            "La base de datos no existe".to_owned(),
-        ));
-    }
-
-    let store = SqliteLeads::open(database).await?;
+    let store = open_for_import(database).await?;
     let backup = backup_path(database);
     store.backup_to(&backup).await?;
     let updated = store.apply_tax_records(&records).await?;
@@ -176,8 +213,8 @@ pub fn parse_prospects(
     Ok(prospects)
 }
 
-/// Validates both files before touching the database, and backs up an
-/// existing database before writing.
+/// Validates both files before touching the database, and backs it up before
+/// writing.
 pub async fn run(
     database: &Path,
     companies: &Path,
@@ -186,15 +223,9 @@ pub async fn run(
     let mut prospects = read_file(companies, ProspectKind::Company)?;
     prospects.extend(read_file(people, ProspectKind::Person)?);
 
-    let existed = database.exists();
-    let store = SqliteLeads::open(database).await?;
-    let backup = if existed {
-        let path = backup_path(database);
-        store.backup_to(&path).await?;
-        Some(path)
-    } else {
-        None
-    };
+    let store = open_for_import(database).await?;
+    let backup = backup_path(database);
+    store.backup_to(&backup).await?;
 
     let added = store.import(&prospects).await?;
     let total = store.count().await?;
