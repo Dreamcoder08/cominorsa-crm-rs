@@ -22,6 +22,11 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - S15. Add features that satisfy the client, inspired by global and regional leaders. User: "mas funcionalidades que le falta al proyecto para que el cliente este satisfecho". Assumption: delivered incrementally, starting with the agenda, team list, and manual backup; WhatsApp stays out until authorized.
 - S16. Add a WhatsApp button that opens the chat with a prepared message; a person reviews and sends it. Without API. The user authorized it: "yes te autorizo". The prepared message is editable in Settings.
 - S17. Show the app icon. User: "me gustaria que se muestre el icon de la app actualmente no sale si necesitas crear imagen o algo usa a codex cli". Assumption: the mark is the existing COMINORSA logo, redrawn in high resolution, not a new design.
+- S18. Backups go to a folder the user chooses, show the last backup, and can be restored. Assumption: restore validates the file and first saves a safety copy.
+- S19. The team list is used: each lead has a responsible person, and it can change.
+- S20. Settings validate visibly and share one save model. Assumption: valid changes save automatically and show "Guardado".
+- S21. Fix the date tooltip, theme flash, and non-text contrast.
+- S22. Redesign Settings as a settings list with a WhatsApp preview.
 
 ## Tasks
 
@@ -34,6 +39,8 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - [x] T7. S12-S15: design system, responsive shell, settings view, and agenda. Route: inline. Commit: e49e7b2.
 - [x] T8. S16: WhatsApp chat link with an editable message template. Route: inline. Commit: 2550d2a.
 - [x] T9. S17: icon in window, sidebar, Windows executable, and Linux launcher. Route: inline. Commit: 67087e5.
+- [x] T10. S18, S19: owner migration, backup settings, restore, and template rules. Route: inline. Risk: item 1. Commit: 71f2dcd.
+- [x] T11. S18-S22: desktop behavior and redesign. Route: inline. Commit: 1cbbe48.
 
 ## Log
 
@@ -61,3 +68,6 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - L20 (2026-11-06): Real-window captures confirmed light theme, dark theme, and the icon rail. Bottom navigation, settings clicks, and agenda were not exercised in the live window. Native review of commits after 4728027 is pending.
 - L21 (2026-11-06, user answer, verbatim): "yes te autorizo". Authorized scope: open `wa.me` in the external browser or app with prepared text. No credential, API, or automatic send.
 - L22 (2026-11-06, user requests, verbatim): "me gustaria que se muestre el icon de la app actualmente no sale si necesitas crear imagen o algo usa a codex cli" and "usa hc de herdr para abrir codex cli si es necesario". The icon was redrawn by Codex CLI from the existing logo, before the second message arrived.
+- L23 (2026-11-06, user request, verbatim): "si tienes problemas de github ci y mas has el repo publico por el momento". `cominorsa-crm-rs` is public after a history audit; `cominorsa-web` stays private.
+- L24 (2026-11-06, user answer, verbatim): "yes confirmo y autorizo todo". Scope: the five points of the Settings audit.
+- L25 (2026-11-06): Commit 71f2dcd went in while the gate failed on a desktop test helper, because the shell condition read `tail`, not the gate. The next desktop commit fixes it. Settings were checked in a temporary preview in both themes; folder dialogs and live restore clicks were not exercised.
