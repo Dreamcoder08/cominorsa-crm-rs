@@ -27,6 +27,7 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - S20. Settings validate visibly and share one save model. Assumption: valid changes save automatically and show "Guardado".
 - S21. Fix the date tooltip, theme flash, and non-text contrast.
 - S22. Redesign Settings as a settings list with a WhatsApp preview.
+- S23. Enrich prospect companies with the official SUNAT roll: RUC, status, condition, and fiscal address. User: "yes te autorizo todo has lo que sea necesario solo necesito los datos". Exclusions: natural persons are not searched; no phone or email exists in the source; ambiguous names stay without a RUC.
 
 ## Tasks
 
@@ -41,6 +42,7 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - [x] T9. S17: icon in window, sidebar, Windows executable, and Linux launcher. Route: inline. Commit: 67087e5.
 - [x] T10. S18, S19: owner migration, backup settings, restore, and template rules. Route: inline. Risk: item 1. Commit: 71f2dcd.
 - [x] T11. S18-S22: desktop behavior and redesign. Route: inline. Commit: 1cbbe48.
+- [x] T12. S23: tax data migration, importer enrichment, and prospect view. Route: inline. Risk: item 1. Commits: 825f906, 949fe9b.
 
 ## Log
 
@@ -73,3 +75,4 @@ Branch: `feat/lead-pipeline-slice`. Delivery strategy: `ask-on-risk`. Test runne
 - L25 (2026-11-06): Commit 71f2dcd went in while the gate failed on a desktop test helper, because the shell condition read `tail`, not the gate. The next desktop commit fixes it. Settings were checked in a temporary preview in both themes; folder dialogs and live restore clicks were not exercised.
 - L26 (2026-11-06): The verifier reported two blockers on d010951: empty or unrelated files passed restore validation, and stored templates with unknown placeholders blocked startup. Fixed in c758cdc with tests that fail on the previous code. A rename failure now keeps the database in place and names the safety copy.
 - L27 (2026-11-06): Verifier recheck at ed0e7d6 passed both blockers. Advisories kept: a rename failure leaves `crm.restoring.db`, the app needs a restart after a post-close failure, and a reopen failure reports an error although the backup was applied.
+- L28 (2026-11-06): SUNAT roll published 2026-11-06 has no phone or email columns. Companies: 436 exact, 30 approximate, 9 ambiguous, 324 without match; 376 active. The output file stays outside the repository.
