@@ -1,6 +1,8 @@
 //! Display rules, kept free of UI framework types so they stay testable.
 
-use cominorsa_domain::{Case, CaseFile, CaseStatus, CaseStep, Lead, Stage};
+use cominorsa_domain::{
+    BillingMilestone, Case, CaseFile, CaseStatus, CaseStep, Lead, Money, Stage, renewal_date,
+};
 use time::{Date, Duration, OffsetDateTime, macros::offset};
 
 const AGENDA_DAYS: i64 = 7;
@@ -27,6 +29,14 @@ impl FollowUp {
             Self::Closed
         } else {
             Self::on(step.due_on(), today)
+        }
+    }
+
+    pub fn of_milestone(milestone: &BillingMilestone, today: Date) -> Self {
+        if milestone.is_paid() {
+            Self::Closed
+        } else {
+            Self::on(milestone.due_on(), today)
         }
     }
 
@@ -120,11 +130,18 @@ pub fn next_follow_up(today: Date, days: u32) -> Date {
     today + Duration::days(i64::from(days))
 }
 
-/// A commercial follow-up or a pending case step.
+/// A commercial follow-up, a pending case step, or an unpaid milestone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AgendaItem {
     FollowUp(Lead),
-    Step { case: Case, step: CaseStep },
+    Step {
+        case: Case,
+        step: CaseStep,
+    },
+    Milestone {
+        case: Case,
+        milestone: BillingMilestone,
+    },
 }
 
 impl AgendaItem {
@@ -132,13 +149,14 @@ impl AgendaItem {
         match self {
             Self::FollowUp(_) => "Seguimiento",
             Self::Step { .. } => "Trámite",
+            Self::Milestone { .. } => "Cobro",
         }
     }
 
     pub fn name(&self) -> &str {
         match self {
             Self::FollowUp(lead) => lead.name(),
-            Self::Step { case, .. } => case.client_name(),
+            Self::Step { case, .. } | Self::Milestone { case, .. } => case.client_name(),
         }
     }
 
@@ -146,11 +164,12 @@ impl AgendaItem {
         match self {
             Self::FollowUp(lead) => lead.follow_up_on(),
             Self::Step { step, .. } => step.due_on(),
+            Self::Milestone { milestone, .. } => milestone.due_on(),
         }
     }
 }
 
-/// Follow-ups and open case steps that need attention, oldest date first.
+/// Follow-ups, open case steps, and unpaid milestones, oldest date first.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgendaGroups {
     pub overdue: Vec<AgendaItem>,
@@ -179,6 +198,19 @@ impl AgendaGroups {
                     AgendaItem::Step {
                         case: file.case.clone(),
                         step: step.clone(),
+                    },
+                    today,
+                );
+            }
+        }
+        // Closing a case stops its steps, never what the client still owes.
+        for file in cases {
+            for milestone in &file.milestones {
+                groups.place(
+                    FollowUp::of_milestone(milestone, today),
+                    AgendaItem::Milestone {
+                        case: file.case.clone(),
+                        milestone: milestone.clone(),
                     },
                     today,
                 );
@@ -253,4 +285,78 @@ pub fn tax_status_class(status: &str) -> &'static str {
     } else {
         "overdue"
     }
+}
+
+/// Formats an amount as `S/ 1,234.50`.
+pub fn format_soles(amount: Money) -> String {
+    let digits = (amount.cents() / 100).to_string();
+    let mut grouped = String::new();
+
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+
+    format!("S/ {grouped}.{:02}", amount.cents() % 100)
+}
+
+/// The amount as an input value, such as `1234.50`.
+pub fn money_input(amount: Money) -> String {
+    format!("{}.{:02}", amount.cents() / 100, amount.cents() % 100)
+}
+
+pub fn milestone_status_label(milestone: &BillingMilestone, today: Date) -> String {
+    match (
+        milestone.paid_on(),
+        FollowUp::of_milestone(milestone, today),
+    ) {
+        (Some(date), _) => format!("Pagado el {}", format_date(date)),
+        (None, FollowUp::Upcoming(_)) => "Próximo".to_owned(),
+        (None, status) => status.label(),
+    }
+}
+
+/// What closing does with the service, stated before a person confirms.
+pub fn renewal_note(case: &Case, today: Date) -> String {
+    renewal_date(case.service(), today).map_or_else(
+        || "Este servicio no genera renovación.".to_owned(),
+        |date| {
+            format!(
+                "Se creará un lead de renovación con seguimiento sugerido el {}. \
+                 Ningún mensaje se envía solo.",
+                format_date(date)
+            )
+        },
+    )
+}
+
+/// Unpaid milestones survive a closing, and the person should know it.
+pub fn close_warning(file: &CaseFile) -> Option<String> {
+    let unpaid = file.unpaid_total();
+
+    (unpaid.cents() > 0).then(|| {
+        format!(
+            "Quedan {} por cobrar; seguirán en la Agenda.",
+            format_soles(unpaid)
+        )
+    })
+}
+
+pub fn closing_notice(renewal: Option<&Lead>) -> String {
+    renewal.map_or_else(
+        || "Expediente cerrado.".to_owned(),
+        |lead| {
+            format!(
+                "Expediente cerrado. Se creó «{}» en el Embudo.",
+                lead.name()
+            )
+        },
+    )
+}
+
+/// Only closed cases that still owe money stay listed.
+pub fn closed_case_label(case: &Case) -> Option<&'static str> {
+    (case.status() == CaseStatus::Closed).then_some("Cerrado, con cobros pendientes")
 }

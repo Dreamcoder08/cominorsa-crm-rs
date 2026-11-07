@@ -2,14 +2,16 @@
 
 use std::{env, fs, path::PathBuf};
 
+mod billing_view;
 mod cases_view;
 mod presentation;
 mod settings_view;
 mod views;
 
 use cominorsa_domain::{
-    CaseFile, CaseRepository, CaseStep, Lead, LeadRepository, NewLead, Prospect,
-    ProspectRepository, Settings, SettingsRepository, Stage, procedure_template,
+    BillingMilestone, BillingRepository, Case, CaseClosure, CaseFile, CaseRepository, CaseStep,
+    DomainError, Lead, LeadRepository, Money, NewLead, NewMilestone, Prospect, ProspectRepository,
+    Settings, SettingsRepository, Stage, procedure_template,
 };
 use cominorsa_storage::SqliteLeads;
 use dioxus::{
@@ -24,11 +26,13 @@ use time::{
 };
 use uuid::Uuid;
 
-pub use cases_view::{CaseDetail, Cases};
+pub use billing_view::BillingPanel;
+pub use cases_view::{CaseDetail, Cases, CloseStep};
 pub use presentation::{
-    AgendaGroups, AgendaItem, FollowUp, PipelineSummary, case_progress, format_date,
-    format_timestamp, matches_query, next_follow_up, owner_options, profile_label,
-    responsible_label, step_status_label, tax_status_class,
+    AgendaGroups, AgendaItem, FollowUp, PipelineSummary, case_progress, close_warning,
+    closed_case_label, closing_notice, format_date, format_soles, format_timestamp, matches_query,
+    milestone_status_label, money_input, next_follow_up, owner_options, profile_label,
+    renewal_note, responsible_label, step_status_label, tax_status_class,
 };
 pub use settings_view::{SaveState, SettingsView};
 pub use views::{Agenda, LeadForm, Prospects, Section, Shell, Workspace};
@@ -81,6 +85,141 @@ impl FormValues {
             ..Self::starting_on(follow_up_on)
         }
     }
+}
+
+/// The new-milestone form, as typed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MilestoneValues {
+    pub title: String,
+    pub amount: String,
+    pub due_on: String,
+}
+
+impl MilestoneValues {
+    pub fn starting_on(due_on: Date) -> Self {
+        Self {
+            due_on: due_on.to_string(),
+            ..Self::default()
+        }
+    }
+}
+
+/// What a person did in the billing panel, before validation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BillingEdit {
+    Total(String),
+    Suggest,
+    Add,
+    Title(BillingMilestone, String),
+    Amount(BillingMilestone, String),
+    DueDate(BillingMilestone, String),
+    TogglePaid(BillingMilestone),
+    Delete(Uuid),
+}
+
+/// A validated billing change, ready to persist.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BillingChange {
+    Total(Uuid, Money),
+    Add(Vec<BillingMilestone>),
+    Save(BillingMilestone),
+    Delete(Uuid),
+}
+
+/// Validates one edit of the billing panel through the domain rules.
+pub fn billing_change(
+    file: &CaseFile,
+    edit: BillingEdit,
+    draft: &MilestoneValues,
+    today: Date,
+) -> Result<BillingChange, String> {
+    let message = |error: DomainError| error.to_string();
+
+    match edit {
+        BillingEdit::Total(text) => Money::parse(&text)
+            .map(|total| BillingChange::Total(file.case.id(), total))
+            .map_err(message),
+        BillingEdit::Suggest => file
+            .suggested_milestones(today)
+            .map(BillingChange::Add)
+            .map_err(message),
+        BillingEdit::Add => {
+            let amount = Money::parse(&draft.amount).map_err(message)?;
+            let milestone = BillingMilestone::create(NewMilestone {
+                case_id: file.case.id(),
+                position: file.next_milestone_position(),
+                title: draft.title.clone(),
+                amount,
+                due_on: parse_milestone_date(&draft.due_on)?,
+            })
+            .map_err(message)?;
+
+            Ok(BillingChange::Add(vec![milestone]))
+        }
+        BillingEdit::Title(mut milestone, title) => {
+            milestone.rename(&title).map_err(message)?;
+            Ok(BillingChange::Save(milestone))
+        }
+        BillingEdit::Amount(mut milestone, text) => {
+            let amount = Money::parse(&text).map_err(message)?;
+            milestone.set_amount(amount).map_err(message)?;
+            Ok(BillingChange::Save(milestone))
+        }
+        BillingEdit::DueDate(mut milestone, value) => {
+            milestone.reschedule(parse_milestone_date(&value)?);
+            Ok(BillingChange::Save(milestone))
+        }
+        BillingEdit::TogglePaid(mut milestone) => {
+            if milestone.is_paid() {
+                milestone.mark_unpaid();
+            } else {
+                milestone.mark_paid(today);
+            }
+            Ok(BillingChange::Save(milestone))
+        }
+        BillingEdit::Delete(id) => Ok(BillingChange::Delete(id)),
+    }
+}
+
+fn parse_milestone_date(value: &str) -> Result<Date, String> {
+    Date::parse(value, &Iso8601::DATE).map_err(|_| "Ingresa la fecha del hito".to_owned())
+}
+
+pub async fn save_billing<R: BillingRepository>(
+    repository: &R,
+    change: BillingChange,
+) -> Result<(), String> {
+    let saved = match change {
+        BillingChange::Total(case_id, total) => {
+            repository.save_contract_total(case_id, total).await
+        }
+        BillingChange::Add(milestones) => repository.add_milestones(&milestones).await,
+        BillingChange::Save(milestone) => repository.save_milestone(&milestone).await,
+        BillingChange::Delete(id) => repository.delete_milestone(id).await,
+    };
+
+    saved.map_err(|error| error.to_string())
+}
+
+/// Closes the case and creates its renewal lead in one atomic operation.
+/// Returns the lead created, and `None` for a service that does not recur or a
+/// repeat, which changes nothing.
+pub async fn save_close<R>(repository: &R, case: Case, today: Date) -> Result<Option<Lead>, String>
+where
+    R: LeadRepository + CaseRepository,
+{
+    let leads = repository.list().await.map_err(|error| error.to_string())?;
+    let source = leads
+        .iter()
+        .find(|lead| lead.id() == case.lead_id())
+        .ok_or_else(|| "No se encontró el lead del expediente".to_owned())?;
+    let closure = CaseClosure::of(case, source, today);
+    let closed = repository
+        .close_case(&closure)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    Ok(closure.renewal.filter(|_| closed))
 }
 
 pub fn parse_form(values: FormValues) -> Result<Lead, String> {
@@ -228,6 +367,24 @@ pub fn App() -> Element {
     let mut query = use_signal(String::new);
     let mut section = use_signal(|| Section::Pipeline);
     let mut prospect_query = use_signal(String::new);
+    let mut milestone_draft = use_signal(|| MilestoneValues::starting_on(today_in_peru()));
+    let mut confirming_close = use_signal(|| false);
+    let mut case_notice = use_signal(String::new);
+    let selected_file = move || {
+        selected_case().and_then(|id| {
+            cases
+                .read()
+                .iter()
+                .find(|file| file.case.id() == id)
+                .cloned()
+        })
+    };
+    let mut reset_case_view = move || {
+        action_error.set(String::new());
+        case_notice.set(String::new());
+        confirming_close.set(false);
+        milestone_draft.set(MilestoneValues::starting_on(today_in_peru()));
+    };
 
     let prospects = use_resource(move || async move {
         let query = prospect_query();
@@ -246,7 +403,7 @@ pub fn App() -> Element {
             let opened = open_store().await?;
             let list = opened.list().await.map_err(|error| error.to_string())?;
             let open = opened
-                .open_cases()
+                .active_cases()
                 .await
                 .map_err(|error| error.to_string())?;
             let saved = opened.load().await.map_err(|error| error.to_string())?;
@@ -305,7 +462,7 @@ pub fn App() -> Element {
                 save_advance(&repository, lead, today_in_peru()).await?;
                 let list = repository.list().await.map_err(|error| error.to_string())?;
                 let open = repository
-                    .open_cases()
+                    .active_cases()
                     .await
                     .map_err(|error| error.to_string())?;
                 Ok::<_, String>((list, open))
@@ -333,7 +490,7 @@ pub fn App() -> Element {
         spawn(async move {
             let saved = async {
                 repository.save_step(&step).await?;
-                repository.open_cases().await
+                repository.active_cases().await
             };
 
             match saved.await {
@@ -342,6 +499,76 @@ pub fn App() -> Element {
                     action_error.set(String::new());
                 }
                 Err(failure) => action_error.set(failure.to_string()),
+            }
+            saving.set(false);
+        });
+    };
+
+    let mut save_billing_edit = move |file: CaseFile, edit: BillingEdit| {
+        let Some(repository) = store.read().clone() else {
+            action_error.set("La base de datos todavía no está lista".to_owned());
+            return;
+        };
+        let clears_draft = edit == BillingEdit::Add;
+        let change = match billing_change(&file, edit, &milestone_draft.read(), today_in_peru()) {
+            Ok(change) => change,
+            Err(message) => {
+                action_error.set(message);
+                return;
+            }
+        };
+
+        saving.set(true);
+        spawn(async move {
+            let saved = async {
+                save_billing(&repository, change).await?;
+                repository
+                    .active_cases()
+                    .await
+                    .map_err(|error| error.to_string())
+            };
+
+            match saved.await {
+                Ok(open) => {
+                    cases.set(open);
+                    action_error.set(String::new());
+                    if clears_draft {
+                        milestone_draft.set(MilestoneValues::starting_on(today_in_peru()));
+                    }
+                }
+                Err(failure) => action_error.set(failure),
+            }
+            saving.set(false);
+        });
+    };
+
+    let mut close_case = move |case: Case| {
+        let Some(repository) = store.read().clone() else {
+            action_error.set("La base de datos todavía no está lista".to_owned());
+            return;
+        };
+
+        saving.set(true);
+        spawn(async move {
+            let saved = async {
+                let renewal = save_close(&repository, case, today_in_peru()).await?;
+                let list = repository.list().await.map_err(|error| error.to_string())?;
+                let open = repository
+                    .active_cases()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok::<_, String>((renewal, list, open))
+            };
+
+            match saved.await {
+                Ok((renewal, list, open)) => {
+                    leads.set(list);
+                    cases.set(open);
+                    action_error.set(String::new());
+                    case_notice.set(closing_notice(renewal.as_ref()));
+                    confirming_close.set(false);
+                }
+                Err(failure) => action_error.set(failure),
             }
             saving.set(false);
         });
@@ -375,7 +602,7 @@ pub fn App() -> Element {
             on_section: move |next| {
                 section.set(next);
                 selected_case.set(None);
-                action_error.set(String::new());
+                reset_case_view();
             },
             if section() == Section::Settings {
                 SettingsView {
@@ -448,7 +675,7 @@ pub fn App() -> Element {
                             let restored = async {
                                 let reopened = restore_backup(repository, backup).await?;
                                 let list = reopened.list().await.map_err(|error| error.to_string())?;
-                                let open = reopened.open_cases().await.map_err(|error| error.to_string())?;
+                                let open = reopened.active_cases().await.map_err(|error| error.to_string())?;
                                 let saved = reopened.load().await.map_err(|error| error.to_string())?;
                                 Ok::<_, String>((reopened, list, open, saved))
                             };
@@ -479,22 +706,39 @@ pub fn App() -> Element {
                     whatsapp_template: settings.read().whatsapp_template().to_owned(),
                     on_open_pipeline: move |_| section.set(Section::Pipeline),
                     on_open_case: move |id: Uuid| {
+                        reset_case_view();
                         selected_case.set(Some(id));
                         section.set(Section::Cases);
                     },
                 }
             } else if section() == Section::Cases {
-                if let Some(file) = selected_case().and_then(|id| {
-                    cases.read().iter().find(|file| file.case.id() == id).cloned()
-                }) {
+                if let Some(file) = selected_file() {
                     CaseDetail {
                         file,
                         today: today_in_peru(),
                         saving: saving(),
                         error: action_error(),
+                        notice: case_notice(),
+                        confirming_close: confirming_close(),
+                        on_close: move |step: CloseStep| match step {
+                            CloseStep::Ask => confirming_close.set(true),
+                            CloseStep::Cancel => confirming_close.set(false),
+                            CloseStep::Confirm => {
+                                if let Some(file) = selected_file().filter(|_| !saving()) {
+                                    close_case(file.case);
+                                }
+                            }
+                        },
+                        draft: milestone_draft(),
+                        on_draft: move |values| milestone_draft.set(values),
+                        on_billing: move |edit: BillingEdit| {
+                            if let Some(file) = selected_file().filter(|_| !saving()) {
+                                save_billing_edit(file, edit);
+                            }
+                        },
                         on_back: move |_| {
                             selected_case.set(None);
-                            action_error.set(String::new());
+                            reset_case_view();
                         },
                         on_toggle: move |mut step: CaseStep| {
                             if saving() {
@@ -523,7 +767,11 @@ pub fn App() -> Element {
                 } else {
                     Cases {
                         cases: cases(),
-                        on_open: move |id: Uuid| selected_case.set(Some(id)),
+                        notice: case_notice(),
+                        on_open: move |id: Uuid| {
+                            reset_case_view();
+                            selected_case.set(Some(id));
+                        },
                     }
                 }
             } else if section() == Section::Pipeline {

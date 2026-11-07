@@ -6,8 +6,9 @@ use time::Date;
 use uuid::Uuid;
 
 use crate::{
-    AgendaGroups, AgendaItem, FollowUp, FormValues, PipelineSummary, format_date, matches_query,
-    owner_options, profile_label, step_status_label, tax_status_class,
+    AgendaGroups, AgendaItem, FollowUp, FormValues, PipelineSummary, format_date, format_soles,
+    matches_query, milestone_status_label, owner_options, profile_label, step_status_label,
+    tax_status_class,
 };
 
 /// Every date on a case step is a suggestion, never a legal deadline.
@@ -99,7 +100,7 @@ pub fn Agenda(
         if is_empty {
             section { class: "empty",
                 h2 { "Nada pendiente" }
-                p { "No hay seguimientos ni trámites para los próximos 7 días." }
+                p { "No hay seguimientos, trámites ni cobros para los próximos 7 días." }
                 button { class: "primary", onclick: move |_| on_open_pipeline.call(()), "Ver embudo" }
             }
         } else {
@@ -165,6 +166,30 @@ fn AgendaGroup(
                                         }
                                         div { class: "card-actions",
                                             span { class: "status {status.class()}", "{step_status_label(&step, today)}" }
+                                            button {
+                                                class: "secondary",
+                                                aria_label: "Ver expediente de {case.client_name()}",
+                                                onclick: move |_| on_open_case.call(id),
+                                                "Ver expediente"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            AgendaItem::Milestone { case, milestone } => {
+                                let status = FollowUp::of_milestone(&milestone, today);
+                                let id = case.id();
+                                rsx! {
+                                    div { class: "agenda-row", key: "{milestone.id()}",
+                                        div {
+                                            span { class: "agenda-kind billing", "{kind}" }
+                                            strong { "{case.client_name()}" }
+                                            span { class: "detail",
+                                                "{milestone.title()} · {format_soles(milestone.amount())} · Vence {format_date(milestone.due_on())}"
+                                            }
+                                        }
+                                        div { class: "card-actions",
+                                            span { class: "status {status.class()}", "{milestone_status_label(&milestone, today)}" }
                                             button {
                                                 class: "secondary",
                                                 aria_label: "Ver expediente de {case.client_name()}",
@@ -418,6 +443,9 @@ fn LeadCard(
             p { class: "detail", "{lead.phone()}" }
             if let Some(ruc) = lead.ruc() {
                 p { class: "detail", "RUC {ruc.as_str()}" }
+            }
+            if lead.renewal_of().is_some() {
+                p { class: "agenda-kind step", "Cliente existente" }
             }
             if !owners.is_empty() {
                 select {

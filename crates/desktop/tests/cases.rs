@@ -234,7 +234,7 @@ fn shows_the_case_data_and_steps_with_suggested_editable_dates() {
     }
     assert_eq!(html.matches("Fecha sugerida, ajústala").count(), 2);
     assert_eq!(html.matches("type=\"checkbox\"").count(), 2);
-    assert_eq!(html.matches("type=\"date\"").count(), 2);
+    assert_eq!(html.matches("type=\"date\"").count(), 3);
     assert!(html.contains("value=\"2026-11-05\""));
     assert_eq!(html.matches("disabled=true").count(), 0);
 }
@@ -243,7 +243,8 @@ fn shows_the_case_data_and_steps_with_suggested_editable_dates() {
 fn disables_step_edits_while_a_save_is_pending() {
     let html = render(saving_case_detail);
 
-    assert_eq!(html.matches("disabled=true").count(), 4);
+    // Two steps with two controls each, plus closing, the total, and the form.
+    assert_eq!(html.matches("disabled=true").count(), 10);
 }
 
 #[test]

@@ -1,23 +1,39 @@
 //! Case list and detail. State and persistence live in `App`.
 
-use cominorsa_domain::{CaseFile, CaseStep};
+use cominorsa_domain::{CaseFile, CaseStatus, CaseStep};
 use dioxus::prelude::*;
 use time::Date;
 use uuid::Uuid;
 
 use crate::{
-    FollowUp, case_progress, format_date, responsible_label, step_status_label,
+    BillingEdit, BillingPanel, FollowUp, MilestoneValues, case_progress, close_warning,
+    closed_case_label, format_date, renewal_note, responsible_label, step_status_label,
     views::STEP_DATE_NOTE,
 };
 
+/// The steps of the explicit closing action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseStep {
+    Ask,
+    Confirm,
+    Cancel,
+}
+
 #[component]
-pub fn Cases(cases: Vec<CaseFile>, on_open: EventHandler<Uuid>) -> Element {
+pub fn Cases(
+    cases: Vec<CaseFile>,
+    #[props(default)] notice: String,
+    on_open: EventHandler<Uuid>,
+) -> Element {
     rsx! {
         header { class: "topbar",
             div {
                 h1 { "Expedientes" }
                 p { class: "subtitle", "Trámites abiertos al firmar un contrato" }
             }
+        }
+        if !notice.is_empty() {
+            p { class: "notice case-notice", role: "status", "{notice}" }
         }
         if cases.is_empty() {
             section { class: "empty",
@@ -45,7 +61,12 @@ pub fn Cases(cases: Vec<CaseFile>, on_open: EventHandler<Uuid>) -> Element {
                                         td { strong { "{file.case.client_name()}" } }
                                         td { "{file.case.service()}" }
                                         td { class: "hide-phone", "{responsible_label(file.case.owner())}" }
-                                        td { "{case_progress(&file)}" }
+                                        td {
+                                            "{case_progress(&file)}"
+                                            if let Some(label) = closed_case_label(&file.case) {
+                                                span { class: "tax-line", "{label}" }
+                                            }
+                                        }
                                         td {
                                             button {
                                                 class: "secondary",
@@ -70,11 +91,19 @@ pub fn CaseDetail(
     today: Date,
     saving: bool,
     error: String,
+    #[props(default)] notice: String,
+    #[props(default)] confirming_close: bool,
+    #[props(default)] on_close: EventHandler<CloseStep>,
+    #[props(default)] draft: MilestoneValues,
+    #[props(default)] on_draft: EventHandler<MilestoneValues>,
+    #[props(default)] on_billing: EventHandler<BillingEdit>,
     on_back: EventHandler<()>,
     on_toggle: EventHandler<CaseStep>,
     on_due_date: EventHandler<(CaseStep, String)>,
 ) -> Element {
-    let case = file.case;
+    let case = file.case.clone();
+    let is_open = case.status() == CaseStatus::Open;
+    let warning = close_warning(&file);
 
     rsx! {
         header { class: "topbar",
@@ -83,7 +112,44 @@ pub fn CaseDetail(
                 p { class: "subtitle", "Expediente abierto el {format_date(case.opened_on())}" }
             }
             div { class: "actions",
+                if let Some(label) = closed_case_label(&case) {
+                    span { class: "status overdue", "{label}" }
+                }
+                if is_open && !confirming_close {
+                    button {
+                        class: "secondary",
+                        disabled: saving,
+                        onclick: move |_| on_close.call(CloseStep::Ask),
+                        "Cerrar expediente"
+                    }
+                }
                 button { class: "secondary", onclick: move |_| on_back.call(()), "Volver a expedientes" }
+            }
+        }
+        if !notice.is_empty() {
+            p { class: "notice case-notice", role: "status", "{notice}" }
+        }
+        if is_open && confirming_close {
+            div { class: "confirm case-confirm", role: "alertdialog", aria_label: "Cerrar expediente",
+                p { strong { "¿Cerrar el expediente de {case.client_name()}?" } }
+                p { "{renewal_note(&case, today)}" }
+                if let Some(warning) = warning {
+                    p { "{warning}" }
+                }
+                div { class: "button-row",
+                    button {
+                        class: "danger",
+                        disabled: saving,
+                        onclick: move |_| on_close.call(CloseStep::Confirm),
+                        "Sí, cerrar expediente"
+                    }
+                    button {
+                        class: "secondary",
+                        disabled: saving,
+                        onclick: move |_| on_close.call(CloseStep::Cancel),
+                        "Cancelar"
+                    }
+                }
             }
         }
         dl { class: "case-facts",
@@ -98,11 +164,12 @@ pub fn CaseDetail(
         section { class: "agenda-group",
             h2 { "Pasos del trámite" }
             div { class: "agenda-list",
-                for step in file.steps {
+                for step in file.steps.clone() {
                     StepRow { key: "{step.id()}", step, today, saving, on_toggle, on_due_date }
                 }
             }
         }
+        BillingPanel { file, today, saving, draft, on_draft, on_edit: on_billing }
     }
 }
 

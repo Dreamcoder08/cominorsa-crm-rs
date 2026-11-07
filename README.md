@@ -1,6 +1,6 @@
 # COMINORSA CRM
 
-Local desktop CRM written in Rust. It registers leads, moves them through the sales pipeline, searches them, shows an agenda of follow-ups and case steps, and keeps a searchable prospect list that converts into leads. Advancing a lead to "Contrato firmado" opens one case in "Expedientes", with procedure steps you mark done and date. Each step date is a suggestion to adjust, labeled "Fecha sugerida, ajústala". Lead cards open a prepared WhatsApp chat that a person reviews and sends. Each lead can have a responsible person from the team list. Settings cover the theme, team, default follow-up days, the WhatsApp message with a preview, and backup and restore. Valid changes save automatically and report their state.
+Local desktop CRM written in Rust. It registers leads, moves them through the sales pipeline, searches them, shows an agenda of follow-ups, case steps, and collections, and keeps a searchable prospect list that converts into leads. Advancing a lead to "Contrato firmado" opens one case in "Expedientes", with procedure steps you mark done and date. Each step date is a suggestion to adjust, labeled "Fecha sugerida, ajústala". A service that names several procedures, such as "IGAFOM + REINFO", combines their steps in the order of the text. Each case tracks its collections: contract total, billing milestones with an optional suggested 30 / 40 / 30 plan, and collected and pending amounts in soles. Unpaid milestones appear in the agenda as "Cobro". Closing a case is an explicit action with confirmation; a recurring service creates one renewal lead in the first stage, marked "Cliente existente", and sending any message stays a human action. Lead cards open a prepared WhatsApp chat that a person reviews and sends. Each lead can have a responsible person from the team list. Settings cover the theme, team, default follow-up days, the WhatsApp message with a preview, and backup and restore. Valid changes save automatically and report their state.
 
 ## Quick path
 
@@ -70,6 +70,8 @@ Dioxus stays inside `crates/desktop` because it is pre-1.0. A future server adap
 | RUC validation | Offline format and check digit only; it does not prove the RUC exists at SUNAT |
 | Pipeline stages and lead fields | Assumptions pending client validation |
 | Case steps | Titles and day offsets are planning suggestions pending client validation; legal deadlines are never stored in code |
+| Billing | Tracks collections only; it does not issue tax invoices or receipts. The 30 / 40 / 30 split comes from an unvalidated example |
+| Renewals | Only DAC suggests a renewal, 12 months after closing, pending client validation; a service naming DAC with others renews as a whole. A closed case with unpaid milestones stays listed until they are paid |
 | Follow-up alerts | Visible only while the app is open |
 | Leads from the website or WhatsApp | Registered manually; there is no automatic intake |
 | Prospects | Concession titleholders without phone, RUC, or email; potential service is inferred, not verified |
